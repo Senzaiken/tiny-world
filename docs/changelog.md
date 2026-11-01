@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-01: Adaptive detail, rising seas
+
+- **Adaptive detail:** chunks with mountains, rough land or coastline are rebuilt at 2× or 4× resolution when they're big on screen.
+  - The extra points are smoothly curved, with added relief and finer coastlines.
+  - Builds run in the background, nearest chunks first, within a budget of 40 detailed chunks (10 at 4×).
+  - Chunk edges stay crack-free.
+  - Nothing changes at the default zoom.
+- **Sea level rises with rain:** slightly in rain, and a lot in storms (flooding lowlands). It drains slowly afterwards.
+
 ## 2026-11-01: Calmer drag, living water, sharp close-ups
 
 - **Drag speed halved** to 2.2 rad per screen width, with a maximum spin of 18 rad/s. Fling thresholds moved to match: squash from 4 rad/s, clouds from 3.5 rad/s.

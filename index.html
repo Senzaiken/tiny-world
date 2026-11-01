@@ -106,7 +106,7 @@ import * as THREE from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { computeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
-const BUILD='20261101152003';
+const BUILD='20261101153402';
 const SAVE_KEY='tinyworld-save-v1'; // the key stays the same; the save itself carries a format version
 const $=id=>document.getElementById(id);
 const clamp=(x,a,b)=>x<a?a:x>b?b:x;
@@ -212,8 +212,8 @@ const fid=new Uint32Array(20*FACE);   // (face,i,j) -> vertex id; vertices on fa
 }
 /* triangles, each tagged with its chunk */
 const NTRI=20*S*S, TRI=new Uint32Array(NTRI*3), triChunk=new Uint16Array(NTRI);
-const chunkOf=new Int32Array(20*CPF*CPF).fill(-1); let NC=0;
-for(let f=0;f<20;f++)for(let ci=0;ci<CPF;ci++)for(let cj=0;ci+cj<CPF;cj++)chunkOf[f*CPF*CPF+ci*CPF+cj]=NC++;
+const chunkOf=new Int32Array(20*CPF*CPF).fill(-1), chunkMeta=[], FACE_FLIP=new Uint8Array(20); let NC=0;
+for(let f=0;f<20;f++)for(let ci=0;ci<CPF;ci++)for(let cj=0;ci+cj<CPF;cj++){chunkOf[f*CPF*CPF+ci*CPF+cj]=NC++;chunkMeta.push([f,ci,cj]);}
 {
   let t=0;
   for(let f=0;f<20;f++){
@@ -221,7 +221,7 @@ for(let f=0;f<20;f++)for(let ci=0;ci<CPF;ci++)for(let cj=0;ci+cj<CPF;cj++)chunkO
     // steps along i head toward corner c and steps along j toward b; flip the winding if that faces inward
     const ux=V[c]-V[a],uy=V[c+1]-V[a+1],uz=V[c+2]-V[a+2],wx=V[b]-V[a],wy=V[b+1]-V[a+1],wz=V[b+2]-V[a+2];
     const flip=((uy*wz-uz*wy)*(V[a]+V[b]+V[c])+(uz*wx-ux*wz)*(V[a+1]+V[b+1]+V[c+1])+(ux*wy-uy*wx)*(V[a+2]+V[b+2]+V[c+2]))<0;
-    const F=f*FACE;
+    const F=f*FACE; FACE_FLIP[f]=flip?1:0;
     for(let i=0;i<S;i++)for(let j=0;i+j<S;j++){
       const ch=chunkOf[f*CPF*CPF+((i/CHUNK)|0)*CPF+((j/CHUNK)|0)];
       const v0=fid[F+i*ROW+j],v1=fid[F+(i+1)*ROW+j],v2=fid[F+i*ROW+j+1];
@@ -292,7 +292,7 @@ const chunks=[];
     const mesh=new THREE.Mesh(g,terrainMat);
     mesh.raycast=acceleratedRaycast; mesh.frustumCulled=false; // culled by cullChunks() instead
     spin.add(mesh);
-    chunks.push({mesh,geo:g,verts:V,dir,ang:ang+.002,cosReach:0,maxR:1});
+    chunks.push({mesh,geo:g,verts:V,dir,ang:ang+.002,maxR:1,meta:chunkMeta[c],version:0,interest:0,want:0,target:0,shown:0,px:0,fine:[null,null,null],queued:[false,false,false],wanted:[0,0,0]});
   }
 }
 /* vertex -> chunk lists (CSR): border vertices belong to several chunks */
@@ -353,7 +353,7 @@ fogShell.renderOrder=2; fogShell.visible=false; spin.add(fogShell);
 let seed=0;
 function generate(s){
   seed=s;
-  const n1=makeSimplex(s),n2=makeSimplex(s+101),n3=makeSimplex(s+202),n4=makeSimplex(s+303);
+  const n1=makeSimplex(s),n2=makeSimplex(s+101),n3=makeSimplex(s+202),n4=makeSimplex(s+303); detailNoise=makeSimplex(s+404);
   for(let i=0;i<N;i++){
     const x=dirs[i*3],y=dirs[i*3+1],z=dirs[i*3+2];
     const px=x+n2(x*1.4,y*1.4,z*1.4)*.3, py=y+n2(x*1.4+7.3,y*1.4,z*1.4)*.3, pz=z+n2(x*1.4,y*1.4+3.1,z*1.4)*.3;
@@ -398,9 +398,12 @@ const PAL={deep:new THREE.Color(0x0f2c44),shallow:new THREE.Color(0x3fa7a2),sand
 const tmpC=new THREE.Color(), tmpC2=new THREE.Color();
 let snowAmt=0, wetAmt=0;
 function shade(i){
-  const h=heights[i],v=vary[i];
-  const dx=dirs[i*3],dy=dirs[i*3+1],dz=dirs[i*3+2];
-  const slope=1-(nrm[i*3]*dx+nrm[i*3+1]*dy+nrm[i*3+2]*dz);
+  shadeVals(heights[i],vary[i],dirs[i*3],dirs[i*3+1],dirs[i*3+2],nrm[i*3],nrm[i*3+1],nrm[i*3+2]);
+  cols[i*3]=tmpC.r;cols[i*3+1]=tmpC.g;cols[i*3+2]=tmpC.b;
+}
+// Biome colour for a point (height, variation, direction, normal) into tmpC.
+function shadeVals(h,v,dx,dy,dz,nx,ny,nz){
+  const slope=1-(nx*dx+ny*dy+nz*dz);
   const c=tmpC;
   if(h<0){ c.copy(PAL.deep).lerp(PAL.shallow,smooth(-.05,-.002,h)); }
   else{
@@ -415,7 +418,6 @@ function shade(i){
     c.lerp(PAL.snow,sn);
     if(wetAmt>0) c.multiplyScalar(1-.24*wetAmt*(1-sn));
   }
-  cols[i*3]=c.r;cols[i*3+1]=c.g;cols[i*3+2]=c.b;
 }
 // Copies a chunk's vertices from the global arrays into its buffers. Shape updates also refit its raycast tree.
 function writeChunk(ch,shape){
@@ -427,7 +429,7 @@ function writeChunk(ch,shape){
       p[o]=dirs[s]*r;p[o+1]=dirs[s+1]*r;p[o+2]=dirs[s+2]*r;n[o]=nrm[s];n[o+1]=nrm[s+1];n[o+2]=nrm[s+2];
       if(r>mr)mr=r;
     }
-    ch.maxR=mr; g.attributes.position.needsUpdate=true; g.attributes.normal.needsUpdate=true;
+    ch.maxR=mr; ch.version++; g.attributes.position.needsUpdate=true; g.attributes.normal.needsUpdate=true;
     g.computeBoundingSphere();
     if(g.boundsTree)g.boundsTree.refit(); else computeBoundsTree.call(g);
   }
@@ -436,10 +438,11 @@ function writeChunk(ch,shape){
 }
 function refreshAll(){
   computeAllNormals(); for(let i=0;i<N;i++)shade(i);
-  for(const ch of chunks)writeChunk(ch,true);
+  for(const ch of chunks){writeChunk(ch,true);chunkInterest(ch);}
+  dropAllFine();
 }
 // After heights change at `list`: recompute normals and colours around them, then re-upload only the chunks touched.
-const mark=new Uint32Array(N), affected=new Uint32Array(N), cmark=new Uint32Array(NC), dirtyChunks=[];
+const mark=new Uint32Array(N), affected=new Uint32Array(N), cmark=new Uint32Array(NC), dirtyChunks=[], changedChunks=new Set();
 let stamp=0, cstamp=0;
 function applyChange(list,count){
   stamp++; let na=0;
@@ -454,14 +457,18 @@ function applyChange(list,count){
     const v=affected[k]; vertexNormal(v); shade(v);
     for(let q=vcStart[v];q<vcStart[v+1];q++){const c=vcList[q];if(cmark[c]!==cstamp){cmark[c]=cstamp;dirtyChunks.push(c);}}
   }
-  for(const c of dirtyChunks)writeChunk(chunks[c],true);
+  for(const c of dirtyChunks){writeChunk(chunks[c],true);changedChunks.add(c);}
   return dirtyChunks.length;
 }
 // Weather-driven recolouring walks the chunks a batch per frame, so snow and rain never cause a hitch.
 let recolorCursor=-1;
 function recolorStep(){
   const end=Math.min(NC,recolorCursor+28);
-  for(let c=recolorCursor;c<end;c++){const ch=chunks[c];for(const v of ch.verts)shade(v);writeChunk(ch,false);}
+  for(let c=recolorCursor;c<end;c++){
+    const ch=chunks[c];for(const v of ch.verts)shade(v);writeChunk(ch,false);
+    for(let L=1;L<=LOD_MAX;L++){const fn=ch.fine[L];if(!fn)continue;const g=fn.geo;
+      shadeFine(fn,g.attributes.position.array,g.attributes.normal.array,g.attributes.color.array);g.attributes.color.needsUpdate=true;}
+  }
   recolorCursor=end>=NC?-1:end;
 }
 /* ---------- visibility: skip chunks outside the view or past the horizon ---------- */
@@ -472,16 +479,157 @@ function cullChunks(){
   const d=_cam.length(); _cam.multiplyScalar(1/d);
   const horizon=Math.acos(Math.min(1,1/d)); // sea-level horizon; the solid seabed and the sea hide everything past it
   _pv.multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse); frustum.setFromProjectionMatrix(_pv);
-  drawnMeshes.length=0;
+  drawnMeshes.length=0; visibleChunks.length=0;
+  const focal=innerHeight/2/Math.tan(THREE.MathUtils.degToRad(camera.fov/2));
   for(const ch of chunks){
     const a=Math.acos(clamp(_cam.dot(ch.dir),-1,1));
     // a chunk shows if any part of it is within the horizon, counting how far its tallest point can see over it
     let vis=a-ch.ang<horizon+Math.acos(1/ch.maxR);
     if(vis){_bs.copy(ch.geo.boundingSphere).applyMatrix4(ch.mesh.matrixWorld);vis=frustum.intersectsSphere(_bs);}
-    ch.mesh.visible=vis; if(vis)drawnMeshes.push(ch.mesh);
+    if(vis){drawnMeshes.push(ch.mesh);visibleChunks.push(ch);chooseLevel(ch,focal);} else ch.shown=0;
+    ch.vis=vis;
+  }
+  applyLevels(visibleChunks);
+  // free fine meshes nobody has wanted for a while (zoomed out, turned away, or replaced)
+  const now=performance.now();
+  if(now-lastSweep>1000){lastSweep=now;for(const ch of chunks)for(let L=1;L<=LOD_MAX;L++){const fn=ch.fine[L];
+    if(fn&&(now-ch.wanted[L]>8000||fn.ver!==ch.version&&!ch.queued[L]))disposeFine(ch,L);}}
+  for(const ch of chunks){
+    ch.mesh.visible=ch.vis&&!ch.shown;   // hidden base meshes still take the brush's raycasts
+    for(let L=1;L<=LOD_MAX;L++){const fn=ch.fine[L];if(fn)fn.mesh.visible=ch.vis&&ch.shown===L;}
   }
   drawnCount=drawnMeshes.length;
 }
+const visibleChunks=[]; let lastSweep=0;
+/* ---------- adaptive detail: chunks with something to show get finer meshes when you're close ----------
+   Level 0 is the shared base mesh (64×64 cells per chunk). Levels 1 and 2 rebuild a chunk at 2× and 4× per edge:
+   points between base vertices are curved with Phong tessellation from the base normals, then given extra relief
+   on mountains and a finer, wigglier coastline. Chunk-border points stay on the straight base edges, so chunks at
+   different levels still meet without cracks. A chunk's level is the lower of what it contains (interest) and how
+   many pixels a base cell covers on screen; builds run a few milliseconds per frame, nearest chunks first. */
+const LOD_MAX=2, LOD_BUDGET=[0,40,10];  // most chunks held at level ≥1 / at level 2
+let detailNoise=null;
+function chunkInterest(ch){
+  // mountains, rough land and coastline earn detail; open sea and flat plains don't (seabed slopes don't count)
+  let mx=-1,coast=0,sl=0,land=0; const V=ch.verts;
+  for(let k=0;k<V.length;k++){const v=V[k],h=heights[v];if(h>mx)mx=h;if(Math.abs(h)<.005)coast++;
+    if(h>0){land++;sl+=1-(nrm[v*3]*dirs[v*3]+nrm[v*3+1]*dirs[v*3+1]+nrm[v*3+2]*dirs[v*3+2]);}}
+  const n=V.length,s=land?sl/land:0,c=coast/n;
+  ch.stats=[mx,s,c];
+  ch.interest=(mx>.06||s>.25||c>.12)?2:(mx>.015||s>.1||c>.03)?1:0;   // slope here is 1−cos of the tilt
+}
+function* buildFine(ch,L){
+  const ver=ch.version,R=1<<L,[f,ci,cj]=ch.meta,F=f*FACE,SR=S*R,W=CHUNK*R,SIDE=W+1,i0=ci*W,j0=cj*W,flip=FACE_FLIP[f];
+  const map=new Int32Array(SIDE*SIDE).fill(-1); let nv=0;
+  for(let u=0;u<=W;u++)for(let v=0;v<=W&&i0+u+j0+v<=SR;v++)map[u*SIDE+v]=nv++;
+  const pos=new Float32Array(nv*3),nor=new Float32Array(nv*3),col=new Float32Array(nv*3),hh=new Float32Array(nv),vv=new Float32Array(nv),bord=new Uint8Array(nv);
+  const P=[0,0,0],Q=[0,0,0],ids=[0,0,0],ws=[0,0,0],nd=detailNoise;
+  for(let u=0;u<=W;u++){
+    for(let v=0;v<=W;v++){
+      const k=map[u*SIDE+v]; if(k<0)break;
+      const fi=i0+u,fj=j0+v,a=fi/R,b=fj/R,ia=Math.floor(a),jb=Math.floor(b),fa=a-ia,fb=b-jb,o=k*3;
+      const onBorder=fi%W===0||fj%W===0||fi+fj===SR;
+      if(fa===0&&fb===0){ids[0]=fid[F+ia*ROW+jb];ws[0]=1;ids[1]=ids[2]=ids[0];ws[1]=ws[2]=0;}
+      else if(fa+fb<=1){ids[0]=fid[F+ia*ROW+jb];ids[1]=fid[F+(ia+1)*ROW+jb];ids[2]=fid[F+ia*ROW+jb+1];ws[0]=1-fa-fb;ws[1]=fa;ws[2]=fb;}
+      else{ids[0]=fid[F+(ia+1)*ROW+jb+1];ids[1]=fid[F+(ia+1)*ROW+jb];ids[2]=fid[F+ia*ROW+jb+1];ws[0]=fa+fb-1;ws[1]=1-fb;ws[2]=1-fa;}
+      P[0]=P[1]=P[2]=0; let vy=0,nx=0,ny=0,nz=0;
+      for(let q=0;q<3;q++){const g=ids[q],w=ws[q],r=1+heights[g];
+        P[0]+=w*dirs[g*3]*r;P[1]+=w*dirs[g*3+1]*r;P[2]+=w*dirs[g*3+2]*r;vy+=w*vary[g];
+        nx+=w*nrm[g*3];ny+=w*nrm[g*3+1];nz+=w*nrm[g*3+2];}
+      let x=P[0],y=P[1],z=P[2];
+      if(!onBorder){
+        // Phong tessellation: blend the point's projections onto each corner's tangent plane
+        Q[0]=Q[1]=Q[2]=0;
+        for(let q=0;q<3;q++){const g=ids[q],w=ws[q],r=1+heights[g],px=dirs[g*3]*r,py=dirs[g*3+1]*r,pz=dirs[g*3+2]*r;
+          const n0=nrm[g*3],n1=nrm[g*3+1],n2=nrm[g*3+2],dd=(x-px)*n0+(y-py)*n1+(z-pz)*n2;
+          Q[0]+=w*(x-dd*n0);Q[1]+=w*(y-dd*n1);Q[2]+=w*(z-dd*n2);}
+        x=.25*x+.75*Q[0];y=.25*y+.75*Q[1];z=.25*z+.75*Q[2];
+        // extra relief: mountains get rougher, coastlines wiggle; it fades out over 1.5 base cells from the chunk edge
+        const len=Math.hypot(x,y,z),h=len-1,dx=x/len,dy=y/len,dz=z/len;
+        const edge=Math.min(fi%W,W-fi%W,fj%W,W-fj%W,SR-fi-fj)/R;
+        const amp=(.0045*smooth(.025,.08,h)+.0016*Math.exp(-((h/.006)**2)))*smooth(0,1.5,edge);
+        const r=len+(amp>1e-5?amp*fbm(nd,dx*90,dy*90,dz*90,3):0);
+        x=dx*r;y=dy*r;z=dz*r;
+      }else{bord[k]=1;const l=Math.hypot(nx,ny,nz)||1;nor[o]=nx/l;nor[o+1]=ny/l;nor[o+2]=nz/l;}
+      pos[o]=x;pos[o+1]=y;pos[o+2]=z;hh[k]=Math.hypot(x,y,z)-1;vv[k]=vy;
+    }
+    if((u&7)===7)yield;
+  }
+  // triangles, wound like the base mesh
+  let nt=0;for(let u=0;u<W;u++)for(let v=0;v<W;v++){const s=i0+u+j0+v;if(s<SR){nt++;if(s<SR-1)nt++;}}
+  const idx=new Uint32Array(nt*3); let t=0;
+  for(let u=0;u<W;u++)for(let v=0;v<W;v++){
+    const s=i0+u+j0+v; if(s>=SR)break;
+    const a0=map[u*SIDE+v],a1=map[(u+1)*SIDE+v],a2=map[u*SIDE+v+1];
+    idx[t++]=a0;idx[t++]=flip?a2:a1;idx[t++]=flip?a1:a2;
+    if(s<SR-1){const a3=map[(u+1)*SIDE+v+1];idx[t++]=a1;idx[t++]=flip?a2:a3;idx[t++]=flip?a3:a2;}
+  }
+  yield;
+  // interior normals from the fine triangles (border normals were set from the base mesh, so neighbours agree)
+  const acc=new Float32Array(nv*3);
+  for(let q=0;q<idx.length;q+=3){
+    const a=idx[q]*3,b=idx[q+1]*3,c=idx[q+2]*3;
+    const ux=pos[b]-pos[a],uy=pos[b+1]-pos[a+1],uz=pos[b+2]-pos[a+2],wx=pos[c]-pos[a],wy=pos[c+1]-pos[a+1],wz=pos[c+2]-pos[a+2];
+    const cx=uy*wz-uz*wy,cy=uz*wx-ux*wz,cz=ux*wy-uy*wx;
+    acc[a]+=cx;acc[a+1]+=cy;acc[a+2]+=cz;acc[b]+=cx;acc[b+1]+=cy;acc[b+2]+=cz;acc[c]+=cx;acc[c+1]+=cy;acc[c+2]+=cz;
+  }
+  for(let k=0;k<nv;k++){if(bord[k])continue;const o=k*3,l=Math.hypot(acc[o],acc[o+1],acc[o+2])||1;nor[o]=acc[o]/l;nor[o+1]=acc[o+1]/l;nor[o+2]=acc[o+2]/l;}
+  yield;
+  const fine={L,ver,h:hh,vary:vv,nv};
+  shadeFine(fine,pos,nor,col);
+  if(ch.version!==ver)return; // the ground changed while this was building; a fresh build gets queued
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3));g.setAttribute('normal',new THREE.BufferAttribute(nor,3));
+  g.setAttribute('color',new THREE.BufferAttribute(col,3));g.setIndex(new THREE.BufferAttribute(idx,1));
+  g.computeBoundingSphere();
+  const mesh=new THREE.Mesh(g,terrainMat); mesh.frustumCulled=false; mesh.visible=false; spin.add(mesh);
+  disposeFine(ch,L); fine.mesh=mesh; fine.geo=g; ch.fine[L]=fine;
+}
+function shadeFine(fine,pos,nor,col){
+  for(let k=0;k<fine.nv;k++){
+    const o=k*3,l=Math.hypot(pos[o],pos[o+1],pos[o+2]);
+    shadeVals(fine.h[k],fine.vary[k],pos[o]/l,pos[o+1]/l,pos[o+2]/l,nor[o],nor[o+1],nor[o+2]);
+    col[o]=tmpC.r;col[o+1]=tmpC.g;col[o+2]=tmpC.b;
+  }
+}
+function disposeFine(ch,L){const fn=ch.fine[L];if(fn&&fn.mesh){spin.remove(fn.mesh);fn.geo.dispose();}ch.fine[L]=null;}
+function dropAllFine(){for(const ch of chunks){for(let L=1;L<=LOD_MAX;L++)disposeFine(ch,L);ch.queued.fill(false);}jobs.length=0;}
+const jobs=[];
+function pumpJobs(ms){
+  if(sculpting)return; // the ground is moving; build once the stroke ends
+  const t0=performance.now();
+  while(jobs.length&&performance.now()-t0<ms){
+    const j=jobs[0];
+    if(j.ch.version!==j.ver){jobs.shift();j.ch.queued[j.L]=false;continue;}
+    if(j.gen.next().done){jobs.shift();j.ch.queued[j.L]=false;}
+  }
+}
+const _cc=new THREE.Vector3(); let detailCount=0;
+// Called from cullChunks for each visible chunk: pick its level and show the best mesh already built for it.
+function chooseLevel(ch,focal){
+  _cc.copy(ch.dir).applyMatrix4(spin.matrixWorld);
+  const dist=Math.max(.05,_cc.distanceTo(camera.position));
+  const cellPx=2*ch.ang*focal/dist/CHUNK, need=cellPx/3;   // aim for base cells of ≤ 3 px once refined
+  const byDist=need>=2.6?2:need>=1.2?1:0;
+  ch.want=Math.min(ch.interest,byDist); ch.px=cellPx;
+}
+function applyLevels(visible){
+  // budgets: nearest (largest on screen) chunks first
+  visible.sort((a,b)=>b.px-a.px);
+  let n1=0,n2=0; detailCount=0;
+  for(const ch of visible){
+    let L=ch.want;
+    if(L>=2&&n2>=LOD_BUDGET[2])L=1;
+    if(L>=1&&n1>=LOD_BUDGET[1])L=0;
+    if(L>=1)n1++; if(L>=2)n2++;
+    ch.target=L; const now=performance.now(); for(let l=1;l<=L;l++)ch.wanted[l]=now;
+    let shown=0;
+    for(let l=L;l>=1;l--){const fn=ch.fine[l];if(fn&&fn.ver===ch.version){shown=l;break;}}
+    if(L>shown&&!ch.queued[L]){ch.queued[L]=true;jobs.push({ch,L,ver:ch.version,gen:buildFine(ch,L)});}
+    ch.shown=shown; if(shown)detailCount++;
+  }
+}
+
 
 /* ---------- atmosphere (one front-side shell: limb haze + outer glow) ---------- */
 const ATMO_R=1.24;
@@ -658,7 +806,7 @@ function dropPoint(D,i,wob){
   _d.copy(cl.center).addScaledVector(cl.east,D.u[i]+wob).addScaledVector(cl.north,D.v[i]);
   const top=_d.length()-cl.size*.15; // drops start at the cloud base, under the wisps
   _d.multiplyScalar(1/_d.length());
-  return top+(1-top)*D.t[i];
+  const sea=1+seaLevel; return top+(sea-top)*D.t[i];
 }
 function updatePrecip(dt,time){
   const nr=Math.round(clamp(W.rain,0,2)*1300);
@@ -719,7 +867,7 @@ function setWeather(name){
   document.querySelectorAll('#weather button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.wx===name));
   queueSave();
 }
-let lastSnow=-1,lastWet=-1,recolorTimer=0;
+let lastSnow=-1,lastWet=-1,recolorTimer=0,seaLevel=0;
 function updateWeather(dt){
   const k=1-Math.exp(-dt*1.4);
   for(const key of ['cover','gray','sun','hemi','rain','snow','storm','fog','wind','atmoS','cirrus']) W[key]+=(wxTarget[key]-W[key])*k;
@@ -733,6 +881,11 @@ function updateWeather(dt){
   else if(recolorTimer<=0&&(Math.abs(snowAmt-lastSnow)>.004||Math.abs(wetAmt-lastWet)>.01)){recolorCursor=0;lastSnow=snowAmt;lastWet=wetAmt;recolorTimer=.15;}
   // fog layer
   const fm=fogShell.material; fm.opacity=W.fog*.6; fogShell.visible=fm.opacity>.01;
+  // Sea level follows rain intensity (W.rain: 1 = steady rain, 1.8 = storm); later this will be the hour's rainfall.
+  // It rises over several seconds and drains away more slowly afterwards.
+  const seaTarget=.0045*clamp(W.rain,0,1)+.009*clamp(W.rain-1,0,1.5);
+  seaLevel+=(seaTarget-seaLevel)*Math.min(1,dt*(seaTarget>seaLevel?.14:.045));
+  water.scale.setScalar(1+seaLevel); fogShell.scale.setScalar(1+seaLevel);
   // lighting and clouds, with lightning flashes
   if(W.storm>.5){nextBolt-=dt;if(nextBolt<=0){strike();nextBolt=Math.random()<.3?.15:1.2+Math.random()*3.5;}}
   if(boltLife>0){boltLife-=dt;bolt.material.opacity=clamp(boltLife/.18,0,1);if(boltLife<=0)bolt.visible=false;}
@@ -841,8 +994,9 @@ let tool='raise', brushR=.13, brushS=.55, flatH=0;
 const touched=new Uint32Array(N), seenV=new Uint32Array(N), umark=new Uint32Array(N); let touchedN=0, vstamp=0, ustamp=0;
 const undoStack=[]; let sculpted=false, strokeUndo=null;
 function beginStroke(){ ustamp++; strokeUndo={idx:[],h:[]}; flatH=Math.max(hitLocal.length()-1,.002); }
+function settleChanged(){for(const c of changedChunks)chunkInterest(chunks[c]);changedChunks.clear();}
 function endStroke(){
-  sculpting=false; sculptId=null;
+  sculpting=false; sculptId=null; settleChanged();
   if(strokeUndo&&strokeUndo.idx.length){
     undoStack.push({idx:Uint32Array.from(strokeUndo.idx),h:Float32Array.from(strokeUndo.h)});
     if(undoStack.length>30)undoStack.shift();
@@ -888,7 +1042,7 @@ function placeRing(){
 function undo(){
   const u=undoStack.pop(); if(!u)return;
   for(let k=0;k<u.idx.length;k++)heights[u.idx[k]]=u.h[k];
-  applyChange(u.idx,u.idx.length); $('undoBtn').disabled=!undoStack.length; saveDirty=true; queueSave();
+  applyChange(u.idx,u.idx.length); settleChanged(); $('undoBtn').disabled=!undoStack.length; saveDirty=true; queueSave();
 }
 
 /* ---------- save / load ---------- */
@@ -1032,11 +1186,12 @@ function frame(t){
   if(brushRing.visible)placeRing();
   updateGlobe(dt); updateFling(dt); updateWeather(dt); updateClouds(dt,time); updatePrecip(dt,time);
   camera.updateMatrixWorld(); squash.updateMatrixWorld(true); cullChunks();
-  if((statT-=dt)<=0){statT=.5;$('chunkTxt').textContent=`${drawnCount}/${NC} chunks drawn`;}
+  pumpJobs(7);
+  if((statT-=dt)<=0){statT=.5;$('chunkTxt').textContent=`${drawnCount}/${NC} chunks drawn · ${detailCount} detailed`;}
   renderer.render(scene,camera);
 }
 requestAnimationFrame(()=>setTimeout(boot,30)); // let the loading screen paint first
-window.__tw={setWeather,heights,N,NC,get drawn(){return drawnCount;},get W(){return W;},
+window.__tw={setWeather,heights,N,NC,get drawn(){return drawnCount;},get detailed(){return detailCount;},get jobs(){return jobs.length;},buildTime:()=>{const ch=chunks.find(c=>c.interest===2)||chunks[0];const t=performance.now();const g=buildFine(ch,2);while(!g.next().done);const t2=performance.now();const g1=buildFine(ch,1);while(!g1.next().done);return [(t2-t).toFixed(0),(performance.now()-t2).toFixed(0)];},stats:()=>chunks.map(c=>c.stats.map(v=>+v.toFixed(4))),lod:()=>chunks.filter(c=>c.vis).map(c=>[c.interest,c.want,c.target,c.shown]),get W(){return W;},get sea(){return seaLevel;},
   cloudU:cloudMat.uniforms,fling,ff:sec=>{for(let t=0;t<sec;t+=.05){time+=.05;updateWeather(.05);updateClouds(.05,time);}},view:(d,a)=>{camDist=camDistT=d;if(a!==null)globe.quaternion.setFromAxisAngle(UP,a);},flick:(x,y,z)=>omega.set(x,y,z),faceHeight:(h)=>{let bi=0,bd=1;for(let i=0;i<N;i+=3){const d=Math.abs(heights[i]-h);if(d<bd){bd=d;bi=i;}}
   const v=new THREE.Vector3(dirs[bi*3],dirs[bi*3+1],dirs[bi*3+2]);globe.quaternion.identity();globe.updateMatrixWorld(true);
   v.applyMatrix4(spin.matrixWorld).normalize();globe.quaternion.setFromUnitVectors(v,CAM_DIR);},globeQ:()=>globe.quaternion.toArray().map(v=>v.toFixed(4)).join(),sculptAt:(x,y,z,t)=>{hitDir.set(x,y,z).normalize();hitLocal.copy(hitDir);tool=t||'raise';beginStroke();for(let i=0;i<30;i++)sculptStep(.05);endStroke();},undo};

@@ -39,6 +39,15 @@ High streaky cirrus sits on a shell at radius 1.255. Its texture is generated at
 - **Rain:** up to 2,600 short, faint streaks (1,300 × the rain value). Streaks are longer, faster and more slanted in storms.
 - **Snow:** up to 1,600 soft flakes that fall slowly and sway.
 
+## Sea level
+
+The sea rises with rain intensity (the `rain` value, where 1 is steady rain and 1.8 is a storm):
+
+- 0.0045 per unit up to 1, plus 0.009 per unit beyond that, which is about 0.0045 for rain and 0.0117 for a storm.
+- It rises at 14% of the gap per second and drains at 4.5% per second, so floods come in over several seconds and linger after the rain stops.
+- The water and fog shells scale with it, and rain and snow land on the new surface. Low ground near the coast floods, and storms drown wide lowlands.
+- Later, `rain` will come from the hour's real rainfall, so the sea will track it directly.
+
 ## Storms
 
 When the storm value is above 0.5, lightning strikes every 1.2 to 4.7 seconds. There's a 30% chance of a quick double strike. Each strike:

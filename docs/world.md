@@ -30,7 +30,24 @@ The sea is a standard PBR sphere (roughness 0.1, opacity 0.8) with waves added i
 - **Culling** happens every frame, and a chunk is drawn only if it passes both checks:
   - **Horizon:** it can be seen over the sea-level horizon from where the camera is. This allows for the chunk's angular size and its tallest point, since a peak can show over the horizon.
   - **View:** its bounding sphere is inside the camera's view.
-- At the default zoom about two thirds of the chunks are drawn. Close up it's usually 25 to 30. The Sculpt panel shows the live count.
+- At the default zoom about two thirds of the chunks are drawn. Close up it's usually 25 to 30. The Sculpt panel shows the live count, plus how many chunks are drawn at extra detail.
+
+## Adaptive detail
+
+Each chunk can be redrawn at level 1 (2× per edge, up to 33k triangles) or level 2 (4× per edge, up to 131k triangles). The base mesh stays the source of truth: sculpting, picking and saving all work on it.
+
+- **Interest** caps how far a chunk can be refined. It's recomputed after generation, after each stroke and after undo.
+  - Level 2: the chunk's highest point is over 0.06, *or* its land's average tilt (1−cos) is over 0.25, *or* over 12% of its vertices are within 0.005 of sea level.
+  - Level 1: thresholds of 0.015, 0.1 and 3%.
+  - Open sea and flat plains stay at level 0. Seabed slopes don't count.
+- **Screen size** sets what a visible chunk needs: aim for base cells of 3 px or less once refined. A cell over 3.6 px asks for level 1, and over 7.8 px for level 2. At the default zoom nothing is refined; close up the nearest chunks reach level 2.
+- **Budget:** at most 40 chunks above level 0, of which 10 at level 2, nearest chunks first.
+- **Building** runs in the background, 7 ms per frame, and pauses during a stroke. Desktop timings are about 115 ms for a level-2 chunk and 10 to 35 ms for level 1. Until a build is ready the chunk shows its best finished level. A sculpted chunk drops back to the base mesh until it's rebuilt.
+- **How fine points are placed:**
+  - Points between base vertices are curved with Phong tessellation (α 0.75) from the base normals.
+  - They then get extra relief: up to 0.0045 on mountains (from height 0.025 to 0.08) and 0.0016 around the coast, from 3 octaves of noise at 90 per radius. The relief fades out within 1.5 base cells of the chunk edge.
+- **Chunk edges** stay on the straight base edges, with base normals, so chunks at different levels meet without cracks or lighting seams.
+- **Memory:** fine meshes nobody has wanted for 8 seconds, or that went stale, are freed.
 
 ## Generation
 
