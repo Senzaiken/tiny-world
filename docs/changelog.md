@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-01: Lakes, trade winds, smoother sea and mountains
+
+- **Lakes vs oceans:** separate bodies of water are found by flood fill. Small enclosed ones are lakes: calm, darker green-blue, with no surf, tides or wind swell.
+- **Trade winds:**
+  - Earth-like wind belts: easterly trades, westerlies and polar easterlies, with calm belts between.
+  - Ocean waves and swell travel downwind.
+  - Clouds drift westward in the tropics and eastward in the mid-latitudes.
+  - Two tidal bulges circle the planet, so coasts slowly rise and fall.
+- **Smoother water:** ripples now use analytic gradients and only broad layers, so the grain and sparkle specks are gone.
+- **Softer mountains:**
+  - rounded ridge crests and slightly lower peaks;
+  - a smoothing pass on high ground (this changes the generated terrain slightly; sculpting is kept);
+  - gentler rock bump;
+  - a soft fill light so shadowed slopes are never pitch black.
+- **No dark rim at coasts:** the steep drop-off just offshore no longer paints the shore as rock.
+
 ## 2026-11-01: Smooth coasts and a real shoreline
 
 - **Smooth coastlines:** the generator no longer puts a small cliff at sea level, which made coasts snap to the mesh grid and show a dark stair-step edge. Land now ramps gently up from the water. Sculpted worlds keep their sculpting, though shorelines shift slightly.

@@ -15,11 +15,38 @@
 The sea has no mesh of its own. Every chunk has a second mesh that shares the chunk's geometry and draws it with the water material: the vertex shader moves each terrain vertex out to the sea surface, and the original height gives the depth there. Fine-detail chunks get a water mesh on their fine geometry too. Chunks whose lowest point is above 0.03 skip water.
 
 - **Depth:** turquoise in the first 0.014 of depth, deep blue below. Opacity goes from 0.3 in the shallows to 0.88 in deep water, and fades to zero right at the waterline. Because the water and the land use the same triangles, the fade follows the true shoreline exactly.
-- **Surf:** a thin white lip at the waterline, plus foam bands parallel to the shore that roll inward within 0.004 of depth, broken up by noise. Bands fade out when they'd be finer than a pixel. Foam is rough, not shiny.
-- **Ripples:** four octaves of drifting 3D value noise (55 to about 530 per radius), applied as a bump. Strength is 1.8 + 0.9 × wind. Octaves finer than a pixel fade out, so there are no global stripes or sparkle grids.
-- **Swell:** two layers of slow noise lift the surface by up to about 0.002 (scaled 0.6 + 0.4 × wind), so shorelines lap.
+- **Surf:** a thin white lip at the waterline, plus foam bands parallel to the shore that roll inward within 0.004 of depth, broken up by noise. Bands fade out when they'd be finer than a pixel. Foam is rough, not shiny. Lakes get no surf bands and a fainter lip.
+- **Ripples** tilt the normal by *analytic* gradients. Screen-space derivatives looked grainy, so they aren't used. There are two parts:
+  - three octaves of drifting value noise, from 36 per radius;
+  - on the ocean, three wind-wave trains (110, 176 and 282 per radius) travelling downwind, spread ±25°, scaled by the wind's strength and broken up by slow noise.
+  - Every layer fades out before it shrinks to a few pixels, so the sea stays smooth. Overall strength is 1.8 + 0.9 × wind.
+- **Swell and tides** move the surface itself:
+  - two layers of slow noise (up to about 0.002, and weaker on lakes);
+  - on the ocean, a wind swell of long crests rolling downwind (about 0.0016 × wind strength);
+  - a tide of two bulges circling the planet every 31 seconds (0.0011, highest at the equator).
+  - Together these make shorelines lap and slowly rise and fall.
+- **Lakes and oceans:** see below.
 - A flat sky-blue environment map gives reflection at grazing angles (intensity 0.55, less in grey weather). The water turns slate in storms.
-- **Wet ground:** the terrain shader darkens a band 0.003 either side of the current sea level.
+- **Wet ground:** the terrain shader darkens a band of about 0.002 either side of the current sea level, by up to 20%.
+
+## Lakes and oceans
+
+- A flood fill over every vertex below sea level finds each separate body of water.
+- Bodies with at least 1% of the planet's vertices are ocean. Smaller ones are lakes.
+- Land vertices touching a lake count as lake too, so the shoreline triangles agree.
+- The label is a per-vertex `aLake` attribute on every chunk mesh, fine ones included.
+- It's recomputed after generation, and after any stroke or undo that moved ground across sea level. Fine meshes in changed chunks rebuild.
+- Lakes are darker and greener, calm, with no surf bands, no wind swell and no tides.
+
+## Winds
+
+Prevailing winds circle the planet's spin axis in Earth-like belts. `u` is eastward and `v` is northward; the same formula runs in JS (`zonalWind`) and in the water shader (`windAt`):
+
+- `u = −cos(3·lat)`: easterly trades below 30°, westerlies from 30° to 60°, polar easterlies above.
+- `v = −0.35·sin(6·lat)`: the trades blow toward the equator, the westerlies poleward, the polar winds toward the equator.
+- Where the belts meet (about 30° and 60°) the wind is calm, and so is the sea.
+- Ocean wind waves and swell travel downwind, scaled by the wind's strength.
+- Clouds drift with `u` (times their own speed and the weather's wind): westward in the tropics, eastward in the mid-latitudes. Clouds, rain, snow, lightning and cirrus live in the tilted planet frame so their latitudes match the belts.
 - Heights, normals and colours live in global arrays. The chunks below copy from them.
 
 ## Chunks
@@ -57,8 +84,9 @@ Generation is seeded, so a seed always rebuilds the same world.
 2. **Continents.** 6-octave fBm, offset by −0.04, gives roughly 40 to 50% land.
    - Ocean: `height = continent × 0.2`, floored at −0.09.
    - Land: `0.004 × smoothstep(0, 0.035, continent) + continent × 0.05`. That's a gentle ramp up from the shore, with no step at sea level, which used to make stair-stepped coastlines.
-3. **Mountains.** Ridged noise is added only inland, and only inside broad "range" regions picked by a second low-frequency noise. It adds up to about 0.12.
+3. **Mountains.** Ridged noise is added only inland, and only inside broad "range" regions picked by a second low-frequency noise. The crests are rounded (`1 − √(n² + 0.012)` instead of `1 − |n|`), and it adds up to about 0.1.
 4. **Detail.** A small high-frequency ripple (±0.0015).
+5. **Softening.** Two relaxation passes pull ground above 0.012 halfway toward its neighbours' average, fully from 0.03 up, so peaks and ridges round off. The result is the base that saves are compared against.
 
 ## Colours
 
@@ -84,7 +112,7 @@ A single front-facing shell at radius 1.24 with a custom shader. For each pixel 
 ## Scene and camera
 
 - The planet is tilted 0.38 rad and spins slowly (0.035 rad/s). Spinning pauses in Sculpt mode.
-- One warm directional sun plus a hemisphere fill light.
+- One warm directional sun, a hemisphere fill light, and a soft bluish ambient light (0.32) so slopes facing away from the sun never go black.
 - 1,800 background stars.
 - The camera stays put. Dragging spins the world itself (`globe`, which holds the planet, clouds, rain and lightning) around the axis perpendicular to the drag. That works on any axis, over the poles too. The sun and atmosphere stay fixed, so spinning sweeps day and night across the planet.
   - Speed is 2.2 rad per screen width, scaled down when zoomed in.
