@@ -51,6 +51,16 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .update-bar{position:fixed;left:12px;right:12px;top:calc(env(safe-area-inset-top) + 58px);display:flex;align-items:center;justify-content:space-between;
   gap:10px;padding:8px 8px 8px 14px;font-size:14px}
 .update-bar[hidden]{display:none}
+#sailPanel{display:grid;grid-template-columns:76px 1fr 76px;align-items:stretch;gap:8px;padding:8px}
+#sailPanel[hidden]{display:none}
+#sailPanel .steer{font-size:26px;border-radius:14px;padding:0;min-height:76px;touch-action:none}
+#sailPanel .steer.held{background:var(--on)}
+.sail-mid{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;font-size:13px;color:var(--muted)}
+.sail-mid .wind{display:flex;align-items:center;gap:6px}
+#windArrow{color:var(--accent);transition:transform .2s}
+#sailSet{padding:7px 14px;font-size:14px}
+#speedTxt{font-variant-numeric:tabular-nums;color:var(--text)}
+body.sailing #newBtn,body.sailing #editBtn,body.sailing #editPanel{display:none!important}
 #loader{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:#04060d;
   color:var(--muted);font-size:14px;letter-spacing:.04em;transition:opacity .6s;z-index:10}
 #loader.done{opacity:0;pointer-events:none}
@@ -72,6 +82,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div class="btns">
       <button id="newBtn">New world</button>
       <button id="editBtn" aria-pressed="false">Sculpt</button>
+      <button id="sailBtn" aria-pressed="false">Sail</button>
     </div>
   </header>
   <div class="bottom">
@@ -86,6 +97,15 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <label class="slider">Size <input id="sizeIn" type="range" min="0.04" max="0.4" step="0.01" value="0.13"></label>
       <label class="slider">Strength <input id="strIn" type="range" min="0.1" max="1" step="0.05" value="0.55"></label>
       <div class="hint">Drag on the planet to sculpt · drag on space to spin<br><span id="chunkTxt"></span> · <span id="buildTxt"></span></div>
+    </div>
+    <div class="panel" id="sailPanel" hidden>
+      <button class="steer" id="portBtn" aria-label="Turn to port">◀</button>
+      <div class="sail-mid">
+        <div class="wind"><svg id="windArrow" viewBox="0 0 24 24" width="22" height="22"><path d="M12 3v15M6 12l6 7 6-7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="windTxt"></span></div>
+        <button id="sailSet">Half sail</button>
+        <div id="speedTxt">0.0 kn</div>
+      </div>
+      <button class="steer" id="stbdBtn" aria-label="Turn to starboard">▶</button>
     </div>
     <nav class="panel weather" id="weather">
       <button data-wx="clear" aria-pressed="true"><span>☀️</span>Clear</button>
@@ -106,7 +126,7 @@ import * as THREE from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { computeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
-const BUILD='20261101161827';
+const BUILD='20261101165625';
 const SAVE_KEY='tinyworld-save-v1'; // the key stays the same; the save itself carries a format version
 const $=id=>document.getElementById(id);
 const clamp=(x,a,b)=>x<a?a:x>b?b:x;
@@ -150,24 +170,25 @@ renderer.toneMapping=THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure=1.05;
 const scene=new THREE.Scene();
 scene.background=new THREE.Color(0x04060d);
-const camera=new THREE.PerspectiveCamera(40,1,0.05,300);
+const camera=new THREE.PerspectiveCamera(40,1,0.05,60);
 
 const SUN_DIR=new THREE.Vector3(5,1.6,3.2).normalize();
 const sun=new THREE.DirectionalLight(0xfff0d8,2.6); sun.position.copy(SUN_DIR).multiplyScalar(10); scene.add(sun);
 const hemi=new THREE.HemisphereLight(0xc4dcff,0x1c2230,0.5); scene.add(hemi);
 const fill=new THREE.AmbientLight(0x8ea7cc,.32); scene.add(fill); // keeps slopes facing away from the sun from going black
 
-/* stars */
+/* stars (inside the far plane; they fade out under a daytime sky) */
+const starMat=new THREE.PointsMaterial({size:1.6,sizeAttenuation:false,vertexColors:true,depthWrite:false,transparent:true});
 {
   const n=1800,pos=new Float32Array(n*3),col=new Float32Array(n*3),r=mulberry32(7);
   for(let i=0;i<n;i++){
-    const u=r()*2-1,a=r()*Math.PI*2,s=Math.sqrt(1-u*u),d=90+r()*60;
+    const u=r()*2-1,a=r()*Math.PI*2,s=Math.sqrt(1-u*u),d=30+r()*20;
     pos.set([Math.cos(a)*s*d,u*d,Math.sin(a)*s*d],i*3);
     const b=.25+Math.pow(r(),3)*.9,w=r(); col.set([b*(w<.15?1:.85),b*.9,b*(w>.85?1:.95)],i*3);
   }
   const g=new THREE.BufferGeometry();
   g.setAttribute('position',new THREE.BufferAttribute(pos,3)); g.setAttribute('color',new THREE.BufferAttribute(col,3));
-  scene.add(new THREE.Points(g,new THREE.PointsMaterial({size:1.6,sizeAttenuation:false,vertexColors:true,depthWrite:false})));
+  scene.add(new THREE.Points(g,starMat));
 }
 
 /* planet hierarchy: tilt -> spin -> terrain/water/fog */
@@ -365,6 +386,10 @@ const NOISE_GLSL=`
     float k1=b-a,k2=c-a,k3=e-a,k4=a-b-c+d,k5=a-c-e+g,k6=a-b-e+f1,k7=-a+b+c-d+e-f1-g+h;
     return vec4(a+k1*u.x+k2*u.y+k3*u.z+k4*u.x*u.y+k5*u.y*u.z+k6*u.z*u.x+k7*u.x*u.y*u.z,
       du*vec3(k1+k4*u.y+k6*u.z+k7*u.y*u.z, k2+k5*u.z+k4*u.x+k7*u.z*u.x, k3+k6*u.x+k5*u.y+k7*u.x*u.y)); }`;
+// [x, y, z, frequency, amplitude, speed]: the shared swell, mirrored by seaOffset() in JS
+const SWELL=(()=>{const r=mulberry32(2718),out=[];for(const [f,a,sp] of [[22,.0009,.55],[31,.0007,-.7],[47,.0005,.9],[63,.0004,-1.1]]){
+  const u=r()*2-1,t=r()*6.283,q=Math.sqrt(1-u*u);out.push([+(Math.cos(t)*q).toFixed(5),+u.toFixed(5),+(Math.sin(t)*q).toFixed(5),f,a,sp]);}return out;})();
+const SWELL_MOD=[.48,.62,-.62];
 const waterEnv=(()=>{const sc=new THREE.Scene();sc.background=new THREE.Color(0x7aa3d8);
   const pm=new THREE.PMREMGenerator(renderer),t=pm.fromScene(sc,0).texture;pm.dispose();return t;})();
 const waterU={uTime:{value:0},uWave:{value:1},uSwell:{value:1},uSea:seaU,uFoam:{value:1},uTide:{value:.0011},uShallow:{value:new THREE.Color(0x3fc4bd)},uLakeCol:{value:new THREE.Color(0x1f5f62)},uNM:{value:new THREE.Matrix3()}};
@@ -377,14 +402,14 @@ waterMat.onBeforeCompile=sh=>{
     vec3 windAt(vec3 d){ float lat=asin(clamp(d.y,-1.,1.)); vec3 e=cross(vec3(0.,1.,0.),d); float le=length(e);
       e=le>1e-4?e/le:vec3(1.,0.,0.); return e*(-cos(3.*lat))+cross(d,e)*(-.35*sin(6.*lat)); }`;
   sh.vertexShader=sh.vertexShader.replace('#include <common>','#include <common>\nattribute float aLake;\n'+head+`
-      float swellAt(vec3 d){ return ((vnoise(d*26.+vec3(uTime*.18,0.,uTime*.11))-.5)*.0026
-                                    +(vnoise(d*61.-vec3(0.,uTime*.27,uTime*.2))-.5)*.0012)*uSwell; }`)
+      // swell: four slow travelling waves in different directions (also computed in JS by seaOffset, for the ship)
+      float swellAt(vec3 d){ return (${SWELL.map(([x,y,z,f,a,sp])=>`${a}*sin(dot(d,vec3(${x},${y},${z}))*${f.toFixed(1)}+uTime*${sp})`).join('+')})*uSwell; }`)
     .replace('#include <beginnormal_vertex>','vec3 objectNormal=normalize(position);')
     .replace('#include <begin_vertex>',`vec3 dir0=normalize(position); vLake=aLake; float ocean=1.-aLake;
       vec3 w=windAt(dir0); float wl=length(w); vec3 wd=w/max(wl,1e-3);
       float sw=swellAt(dir0)*(.3+.7*ocean)
         // wind swell: long crests rolling downwind, stronger where the wind is
-        +ocean*uSwell*.0016*(.25+wl)*sin(dot(dir0,wd)*38.-uTime*1.1)*(.5+.9*vnoise(dir0*9.+uTime*.03))
+        +ocean*uSwell*.0016*(.25+wl)*sin(dot(dir0,wd)*38.-uTime*1.1)*(.9+.5*sin(dot(dir0,vec3(${SWELL_MOD.join(',')}))*9.+uTime*.07))
         // tides: two bulges circling the planet, highest at the equator
         +ocean*uTide*cos(2.*(atan(dir0.z,dir0.x)-uTime*.2))*(1.-dir0.y*dir0.y);
       vec3 transformed=dir0*(1.+uSea+sw); vObj=dir0; vDepth=uSea+sw-(length(position)-1.);`);
@@ -1028,6 +1053,8 @@ function rotateBy(dx,dy){
 }
 canvas.addEventListener('pointerdown',e=>{
   try{canvas.setPointerCapture(e.pointerId);}catch(_){}
+  if(sail.launching){ if(pick(e))launchAt(hitDir.clone()); else toast('Tap the sea to launch your ship'); return; }
+  if(sail.active){ sailPointer('down',e); return; }
   ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
   if(ptrs.size>=2){
     if(sculpting){endStroke();lastPointer=null;}
@@ -1037,6 +1064,7 @@ canvas.addEventListener('pointerdown',e=>{
   dragId=e.pointerId; omega.set(0,0,0); dragV.set(0,0,0); lastMoveT=performance.now();  // catching it stops the spin
 });
 canvas.addEventListener('pointermove',e=>{
+  if(sail.active){ sailPointer('move',e); return; }
   const p=ptrs.get(e.pointerId);
   if(p){
     const dx=e.clientX-p.x, dy=e.clientY-p.y; p.x=e.clientX; p.y=e.clientY;
@@ -1055,6 +1083,7 @@ canvas.addEventListener('pointermove',e=>{
   if(dragId===null&&ptrs.size<2)haveHover=pick(e);
 });
 const up=e=>{
+  sailPointer('up',e);
   if(e.pointerId===dragId){
     dragId=null;
     if(performance.now()-lastMoveT<90){omega.copy(dragV);if(omega.length()>MAX_SPIN)omega.setLength(MAX_SPIN);} // fling
@@ -1065,7 +1094,7 @@ const up=e=>{
 };
 canvas.addEventListener('pointerup',up); canvas.addEventListener('pointercancel',up);
 canvas.addEventListener('pointerleave',e=>{if(e.pointerType==='mouse'&&!sculpting)haveHover=false;});
-canvas.addEventListener('wheel',e=>{e.preventDefault();camDistT=clamp(camDistT*Math.exp(e.deltaY*.0012),MIN_DIST,MAX_DIST);},{passive:false});
+canvas.addEventListener('wheel',e=>{e.preventDefault();if(sail.active){sail.distT=clamp(sail.distT*Math.exp(e.deltaY*.0015),.014,.2);return;}camDistT=clamp(camDistT*Math.exp(e.deltaY*.0012),MIN_DIST,MAX_DIST);},{passive:false});
 function updateGlobe(dt){
   const w=omega.length();
   if(dragId===null&&w>0){
@@ -1231,6 +1260,17 @@ $('undoBtn').addEventListener('click',undo);
 $('sizeIn').addEventListener('input',e=>brushR=+e.target.value);
 $('strIn').addEventListener('input',e=>brushS=+e.target.value);
 $('newBtn').addEventListener('click',newWorld);
+$('sailBtn').addEventListener('click',()=>{ if(sail.active)leaveSail(); else if(sail.launching)cancelLaunch(); else enterLaunch(); });
+$('sailSet').addEventListener('click',()=>{ sail.level=sail.level>=1?0:sail.level+.5; updateSailHUD(); });
+for(const [id,dir] of [['portBtn',-1],['stbdBtn',1]]){
+  const b=$(id),on=e=>{e.preventDefault();sail.rudder=dir;b.classList.add('held');},off=()=>{if(sail.rudder===dir)sail.rudder=0;b.classList.remove('held');};
+  b.addEventListener('pointerdown',on); b.addEventListener('pointerup',off); b.addEventListener('pointercancel',off); b.addEventListener('pointerleave',off);
+}
+// keyboard: A/D or arrows steer, W/S raise and lower sail
+addEventListener('keydown',e=>{ if(!sail.active)return; const k=e.key.toLowerCase();
+  if(k==='a'||k==='arrowleft')sail.keyRudder=-1; else if(k==='d'||k==='arrowright')sail.keyRudder=1;
+  else if(k==='w'||k==='arrowup'){sail.level=Math.min(1,sail.level+.5);updateSailHUD();} else if(k==='s'||k==='arrowdown'){sail.level=Math.max(0,sail.level-.5);updateSailHUD();} });
+addEventListener('keyup',e=>{ const k=e.key.toLowerCase(); if(['a','d','arrowleft','arrowright'].includes(k))sail.keyRudder=0; });
 $('buildTxt').textContent=`build ${BUILD}`;
 
 /* ---------- updates: compare this page's build with version.json ---------- */
@@ -1247,7 +1287,7 @@ setInterval(checkForUpdate,60000);
 function resize(){renderer.setSize(innerWidth,innerHeight,false);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();}
 addEventListener('resize',resize);
 resize();
-const timer=new THREE.Timer(); let time=0, statT=0;
+const timer=new THREE.Timer(); let time=0, statT=0, hudT=0;
 async function boot(){
   if(!(await load()))generate((Math.random()*2**31)|0);
   refreshAll(); fitCamera(); save();
@@ -1255,6 +1295,328 @@ async function boot(){
   setTimeout(checkForUpdate,3000);
   renderer.setAnimationLoop(frame);
 }
+/* ---------- sailing: launch a ship anywhere on the water and sail it in third person ----------
+   The ship lives in the planet's frame (child of `spin`) as a unit direction `p` plus a heading `fwd` in the
+   tangent plane. Its speed comes from the prevailing wind (windAtJS, the same belts the water shader uses) and a
+   simple polar curve: fastest on a beam reach, slow dead downwind, nearly stalled into the wind. It rides the
+   water surface computed by seaOffset(), which mirrors the water shader's swell, wind swell and tide exactly,
+   so it bobs, pitches and rolls with the sea it sits on. Land ahead blocks it. */
+const SHIP_LEN=.009, MAX_SPEED=.028, TURN_RATE=.85;
+const sail={active:false,phase:'',launching:false,p:new THREE.Vector3(0,0,1),fwd:new THREE.Vector3(1,0,0),speed:0,rudder:0,keyRudder:0,
+  level:.5,lake:0,yaw:0,pitch:.32,dist:.034,distT:.034,t:0,from:new THREE.Vector3(),fromUp:new THREE.Vector3(),fromLook:new THREE.Vector3(),
+  bump:0,aground:false,heel:0,polar:0,windRel:0};
+const _sv=new THREE.Vector3(),_sw=new THREE.Vector3(),_sw2=new THREE.Vector3(),_hc1=new THREE.Color(),_hc2=new THREE.Color(),_sr=new THREE.Vector3(),_su=new THREE.Vector3(),_sq=new THREE.Vector3(),_sm=new THREE.Matrix4();
+function windAtJS(d,out){
+  const lat=Math.asin(clamp(d.y,-1,1));
+  let ex=d.z,ez=-d.x; const le=Math.hypot(ex,ez); if(le>1e-4){ex/=le;ez/=le;}else{ex=1;ez=0;}
+  const nx=d.y*ez, ny=d.z*ex-d.x*ez, nz=-d.y*ex;          // north = d × east
+  const u=-Math.cos(3*lat), v=-.35*Math.sin(6*lat);
+  return out.set(ex*u+nx*v, ny*v, ez*u+nz*v);
+}
+// Radial offset of the water surface above radius 1 at unit direction d (planet frame). Mirrors the water shader.
+function seaOffset(d,lake){
+  const t=waterU.uTime.value, ocean=1-lake, U=waterU.uSwell.value;
+  let s=0; for(const [x,y,z,f,a,sp] of SWELL)s+=a*Math.sin((d.x*x+d.y*y+d.z*z)*f+t*sp);
+  s*=U*(.3+.7*ocean);
+  if(ocean>0){
+    windAtJS(d,_sw2); const wl=_sw2.length(); _sw2.multiplyScalar(1/Math.max(wl,1e-3));
+    const [mx,my,mz]=SWELL_MOD;
+    s+=ocean*U*.0016*(.25+wl)*Math.sin(d.dot(_sw2)*38-t*1.1)*(.9+.5*Math.sin((d.x*mx+d.y*my+d.z*mz)*9+t*.07));
+    s+=ocean*waterU.uTide.value*Math.cos(2*(Math.atan2(d.z,d.x)-t*.2))*(1-d.y*d.y);
+  }
+  return seaLevel+s;
+}
+// Ground height and lake flag under unit direction d: nearest vertex, then the triangle around it that contains d.
+const _g={h:0,lake:0};
+function groundAt(d){
+  let bv=-1,bd=-2;
+  for(const ch of chunks){
+    if(ch.dir.x*d.x+ch.dir.y*d.y+ch.dir.z*d.z<Math.cos(ch.ang+.01))continue;
+    const V=ch.verts;
+    for(let k=0;k<V.length;k++){const v=V[k],dd=dirs[v*3]*d.x+dirs[v*3+1]*d.y+dirs[v*3+2]*d.z;if(dd>bd){bd=dd;bv=v;}}
+  }
+  if(bv<0){_g.h=0;_g.lake=0;return _g;}
+  _g.h=heights[bv];_g.lake=lakeV[bv];
+  for(let k=vtStart[bv];k<vtStart[bv+1];k++){
+    const t=vtList[k]*3,a=TRI[t],b=TRI[t+1],c=TRI[t+2];
+    // barycentric coordinates of d (projected onto the triangle's plane)
+    const ax=dirs[a*3],ay=dirs[a*3+1],az=dirs[a*3+2];
+    const v0x=dirs[b*3]-ax,v0y=dirs[b*3+1]-ay,v0z=dirs[b*3+2]-az,v1x=dirs[c*3]-ax,v1y=dirs[c*3+1]-ay,v1z=dirs[c*3+2]-az;
+    const v2x=d.x-ax,v2y=d.y-ay,v2z=d.z-az;
+    const d00=v0x*v0x+v0y*v0y+v0z*v0z,d01=v0x*v1x+v0y*v1y+v0z*v1z,d11=v1x*v1x+v1y*v1y+v1z*v1z;
+    const d20=v2x*v0x+v2y*v0y+v2z*v0z,d21=v2x*v1x+v2y*v1y+v2z*v1z,den=d00*d11-d01*d01;
+    const wb=(d11*d20-d01*d21)/den,wc=(d00*d21-d01*d20)/den,wa=1-wb-wc;
+    if(wa>=-1e-4&&wb>=-1e-4&&wc>=-1e-4){
+      _g.h=wa*heights[a]+wb*heights[b]+wc*heights[c];
+      _g.lake=Math.max(wa>.2?lakeV[a]:0,wb>.2?lakeV[b]:0,wc>.2?lakeV[c]:0);
+      break;
+    }
+  }
+  return _g;
+}
+/* the ship model: built from simple shapes, 1 unit long, bow toward +z, waterline at y=0 */
+const ship=(()=>{
+  const grp=new THREE.Group(); grp.matrixAutoUpdate=false; grp.visible=false;
+  const wood=new THREE.MeshStandardMaterial({color:0x8a5a33,roughness:.8,flatShading:true});
+  const deckM=new THREE.MeshStandardMaterial({color:0xc49a6c,roughness:.9,flatShading:true});
+  const dark=new THREE.MeshStandardMaterial({color:0x4a3220,roughness:.8});
+  const outline=(k)=>{const s=new THREE.Shape();s.moveTo(-.15*k,-.5*k);s.lineTo(.15*k,-.5*k);s.quadraticCurveTo(.19*k,-.05*k,.17*k,.1*k);
+    s.quadraticCurveTo(.14*k,.38*k,0,.56*k);s.quadraticCurveTo(-.14*k,.38*k,-.17*k,.1*k);s.quadraticCurveTo(-.19*k,-.05*k,-.15*k,-.5*k);return s;};
+  const hg=new THREE.ExtrudeGeometry(outline(1),{depth:.24,bevelEnabled:false,curveSegments:8});
+  hg.rotateX(-Math.PI/2); hg.rotateY(Math.PI); hg.translate(0,-.1,0);
+  { // taper the hull toward the keel
+    const p=hg.attributes.position;
+    for(let i=0;i<p.count;i++){const y=p.getY(i),k=.45+.55*clamp((y+.1)/.24,0,1);p.setX(i,p.getX(i)*k);if(y<-.05)p.setZ(i,p.getZ(i)*(.85+.15*k));}
+    hg.computeVertexNormals();
+  }
+  grp.add(new THREE.Mesh(hg,wood));
+  const dg=new THREE.ShapeGeometry(outline(.88)); dg.rotateX(-Math.PI/2); dg.rotateY(Math.PI); dg.translate(0,.141,0);
+  grp.add(new THREE.Mesh(dg,deckM));
+  const cabin=new THREE.Mesh(new THREE.BoxGeometry(.2,.09,.16),wood); cabin.position.set(0,.18,-.36); grp.add(cabin);
+  const mast=(h,z)=>{const m=new THREE.Mesh(new THREE.CylinderGeometry(.012,.016,h,6),dark);m.position.set(0,.14+h/2,z);grp.add(m);};
+  mast(.78,.05); mast(.56,.3);
+  const sailM=new THREE.MeshStandardMaterial({color:0xf3ead6,roughness:.85,side:THREE.DoubleSide,emissive:0x6b6250}); // canvas glows a little when backlit
+  const sails=[];
+  const mkSail=(w,h,z,y0)=>{
+    const g=new THREE.PlaneGeometry(w,h,6,6); g.translate(0,h/2,0);
+    const piv=new THREE.Group(); piv.position.set(0,y0,z); grp.add(piv);
+    const m=new THREE.Mesh(g,sailM); m.position.z=-.012; piv.add(m);
+    sails.push({piv,g,base:g.attributes.position.array.slice(),w,h});
+  };
+  mkSail(.34,.5,.05,.25); mkSail(.26,.36,.3,.22);
+  const flagG=new THREE.PlaneGeometry(.12,.06,4,1); flagG.translate(.06,0,0);
+  const flag=new THREE.Mesh(flagG,new THREE.MeshStandardMaterial({color:0xd8453a,roughness:.7,side:THREE.DoubleSide}));
+  const flagPiv=new THREE.Group(); flagPiv.position.set(0,.94,.05); flagPiv.add(flag); grp.add(flagPiv);
+  spin.add(grp);
+  return {grp,sails,flagPiv,flagG,flagBase:flagG.attributes.position.array.slice()};
+})();
+/* the wake: soft foam points left behind the stern, spreading and fading */
+const WAKE_N=360;
+const wake=(()=>{
+  const g=new THREE.BufferGeometry(),pos=new Float32Array(WAKE_N*3),age=new Float32Array(WAKE_N).fill(1);
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('aAge',new THREE.BufferAttribute(age,1).setUsage(THREE.DynamicDrawUsage));
+  const m=new THREE.ShaderMaterial({uniforms:{uScale:{value:500}},transparent:true,depthWrite:false,
+    vertexShader:`attribute float aAge; uniform float uScale; varying float vA;
+      void main(){ vA=aAge; vec4 mv=modelViewMatrix*vec4(position,1.); gl_Position=projectionMatrix*mv;
+        gl_PointSize=min(26.,.0005*(1.+aAge*3.)*uScale/max(-mv.z,.0005)); }`,
+    fragmentShader:`varying float vA; void main(){ vec2 c=gl_PointCoord-.5; float r=length(c)*2.; if(r>1.)discard;
+      gl_FragColor=vec4(vec3(.95,.98,1.),(1.-r*r)*(1.-vA)*(1.-vA)*.4);
+      #include <colorspace_fragment>
+      }`});
+  const pts=new THREE.Points(g,m); pts.frustumCulled=false; pts.visible=false; pts.renderOrder=2; spin.add(pts);
+  const P=Array.from({length:WAKE_N},()=>({d:new THREE.Vector3(),s:new THREE.Vector3(),born:-99,life:3,spread:0}));
+  return {pts,g,pos,age,P,next:0,timer:0};
+})();
+/* sky seen from near the surface: drawn on the inside of a shell, added over the dark background */
+const skyMat=new THREE.ShaderMaterial({
+  uniforms:{uSun:{value:SUN_DIR},uGray:{value:0},uFog:{value:0},uOn:{value:0},uInv:atmoMat.uniforms.uInv},
+  vertexShader:`varying vec3 vW; void main(){ vec4 w=modelMatrix*vec4(position,1.); vW=w.xyz; gl_Position=projectionMatrix*viewMatrix*w; }`,
+  fragmentShader:`uniform vec3 uSun; uniform float uGray; uniform float uFog; uniform float uOn; uniform mat3 uInv; varying vec3 vW;
+    void main(){
+      vec3 c=uInv*cameraPosition, d=normalize(uInv*vW-c), up=normalize(c);
+      float e=dot(d,up), su=dot(up,uSun), day=smoothstep(-.18,.22,su), s=max(dot(d,uSun),0.);
+      vec3 col=mix(vec3(.5,.68,.9),vec3(.1,.27,.7),pow(clamp(e,0.,1.),.45));
+      float dusk=exp(-su*su/.03);
+      col=mix(col,vec3(1.,.5,.27),dusk*.6*pow(1.-clamp(e,0.,1.),3.)*(.35+.65*smoothstep(-.3,.9,dot(d,uSun))));
+      col*=day;
+      col+=vec3(1.,.82,.55)*pow(s,10.)*.3*day+vec3(1.,.95,.8)*smoothstep(.9994,.9998,s)*4.*step(-.03,e);
+      vec3 g=vec3(dot(col,vec3(.3,.55,.15)));
+      col=mix(col,g*.8,uGray*.85); col=mix(col,vec3(.72,.76,.82)*(.08+.92*day),uFog*.7);
+      col+=vec3(.006,.009,.02);
+      gl_FragColor=vec4(col*uOn,1.);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+  side:THREE.BackSide,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+const sky=new THREE.Mesh(new THREE.SphereGeometry(1.235,64,48),skyMat); sky.renderOrder=-1; sky.visible=false; squash.add(sky);
+scene.fog=new THREE.Fog(0x8fb0d8,1000,2000);
+const _horizon=new THREE.Color();
+
+function enterLaunch(){
+  if(editing)$('editBtn').click();
+  sail.launching=true; $('sailBtn').textContent='Cancel'; $('sailBtn').setAttribute('aria-pressed','true');
+  toast('Tap the sea to launch your ship');
+}
+function cancelLaunch(){sail.launching=false;$('sailBtn').textContent='Sail';$('sailBtn').setAttribute('aria-pressed','false');}
+// Find the launch spot: the tapped point if it's water, else the nearest water within ~0.15 rad.
+function launchAt(d){
+  const g=groundAt(d);
+  let best=null;
+  if(g.h<seaLevel-.0015)best=d.clone();
+  else{
+    let bd=-2;
+    for(const ch of chunks){
+      if(ch.dir.dot(d)<Math.cos(ch.ang+.15))continue;
+      for(const v of ch.verts){
+        if(heights[v]>=seaLevel-.003)continue;
+        const dd=dirs[v*3]*d.x+dirs[v*3+1]*d.y+dirs[v*3+2]*d.z;
+        if(dd>bd&&dd>Math.cos(.15)){bd=dd;best=_sv.set(dirs[v*3],dirs[v*3+1],dirs[v*3+2]).clone();}
+      }
+    }
+  }
+  if(!best){toast('No water nearby. Tap the sea');return false;}
+  cancelLaunch();
+  sail.p.copy(best).normalize();
+  // start heading across the wind, the fastest point of sail
+  windAtJS(sail.p,_sw); _sr.crossVectors(_sw,sail.p);
+  sail.fwd.copy(_sr.lengthSq()>1e-8?_sr:_sv.set(0,1,0).cross(sail.p)).normalize();
+  sail.speed=0; sail.yaw=0; sail.pitch=.32; sail.dist=sail.distT=.034; sail.aground=false;
+  for(const w of wake.P)w.born=-99;
+  sail.active=true; sail.phase='in'; sail.t=0; omega.set(0,0,0);
+  sail.from.copy(camera.position); sail.fromUp.copy(camera.up); sail.fromLook.set(0,0,0);
+  ship.grp.visible=true; wake.pts.visible=true;
+  document.body.classList.add('sailing'); $('sailPanel').hidden=false; $('sailBtn').textContent='Planet';
+  updateSailHUD();
+  return true;
+}
+function leaveSail(){
+  if(!sail.active||sail.phase==='out')return;
+  sail.phase='out'; sail.t=0; sail.from.copy(camera.position); sail.fromUp.copy(camera.up);
+  _sv.set(0,.004,0); sail.fromLook.copy(shipWorld(_sv));
+  $('sailPanel').hidden=true; $('sailBtn').textContent='Sail'; $('sailBtn').setAttribute('aria-pressed','false');
+}
+const _shipW=new THREE.Vector3();
+function shipWorld(offsetUp){ // world position of the ship's deck, optionally lifted along its up
+  const r=1+seaOffset(sail.p,sail.lake);
+  return _shipW.copy(sail.p).multiplyScalar(r).addScaledVector(sail.p,offsetUp?offsetUp.y:0).applyMatrix4(spin.matrixWorld);
+}
+// polar curve: speed fraction by angle off dead downwind (0°) to dead upwind (180°)
+const POLAR=[[0,.62],[40,.86],[90,1],[120,.88],[138,.5],[150,.12],[180,.04]];
+function polar(deg){for(let i=1;i<POLAR.length;i++)if(deg<=POLAR[i][0]){const [a,pa]=POLAR[i-1],[b,pb]=POLAR[i];return pa+(pb-pa)*(deg-a)/(b-a);}return .04;}
+function updateShip(dt){
+  const p=sail.p,f=sail.fwd;
+  const g=groundAt(p); sail.lake=g.lake;
+  // wind and point of sail
+  windAtJS(p,_sw); const wl=_sw.length(); if(wl>1e-4)_sw.multiplyScalar(1/wl);
+  _sr.crossVectors(f,p).normalize();                 // starboard
+  const cosA=clamp(f.dot(_sw),-1,1), deg=Math.acos(cosA)*180/Math.PI;
+  sail.polar=polar(deg); sail.windRel=Math.atan2(_sw.dot(_sr),_sw.dot(f));
+  const windSpeed=(.12+.88*Math.min(1.2,wl))*(.55+.45*W.wind)*(sail.lake?.6:1);
+  const target=sail.level*MAX_SPEED*windSpeed*sail.polar*(sail.aground?0:1);
+  sail.speed+=(target-sail.speed)*Math.min(1,dt*.55);
+  // steering: works even when slow, sharper with way on
+  const rud=clamp(sail.rudder+sail.keyRudder,-1,1);
+  if(rud){f.addScaledVector(_sr,rud*TURN_RATE*dt*(.4+.6*Math.min(1,sail.speed/.012))).normalize();}
+  sail.heel+=((rud*sail.speed/MAX_SPEED*.25+Math.sin(sail.windRel)*sail.level*.12*windSpeed)-sail.heel)*Math.min(1,dt*2);
+  // move, unless the ground ahead is above the water
+  const step=sail.speed*dt;
+  _sq.copy(p).addScaledVector(f,step+SHIP_LEN*.65).normalize();
+  const ahead=groundAt(_sq).h, surfAhead=seaOffset(_sq,sail.lake);
+  if(ahead>surfAhead-.0007&&sail.speed>.0005){ sail.speed*=.2; sail.bump=1; }
+  else p.addScaledVector(f,step).normalize();
+  f.addScaledVector(p,-f.dot(p)).normalize();      // keep the heading in the tangent plane
+  const here=seaOffset(p,sail.lake); sail.aground=g.h>here-.0004;
+  sail.bump=Math.max(0,sail.bump-dt*2);
+  // pose: ride the surface, pitch and roll with its slope, heel with wind and turns
+  const e=.004;
+  _sv.copy(p).addScaledVector(f,e).normalize(); const sF=seaOffset(_sv,sail.lake);
+  _sv.copy(p).addScaledVector(f,-e).normalize(); const sB=seaOffset(_sv,sail.lake);
+  _sv.copy(p).addScaledVector(_sr,e).normalize(); const sR=seaOffset(_sv,sail.lake);
+  _sv.copy(p).addScaledVector(_sr,-e).normalize(); const sL=seaOffset(_sv,sail.lake);
+  const slopeF=(sF-sB)/(2*e), slopeR=(sR-sL)/(2*e);
+  _su.copy(p).addScaledVector(f,-slopeF).addScaledVector(_sr,-slopeR+sail.heel+Math.sin(time*9)*sail.bump*.15).normalize();
+  const Z=_sv.copy(f).addScaledVector(_su,-f.dot(_su)).normalize(), X=_sq.crossVectors(_su,Z);
+  _sm.makeBasis(X,_su,Z).scale(_sw.set(SHIP_LEN,SHIP_LEN,SHIP_LEN));
+  _sm.setPosition(_sr.copy(p).multiplyScalar(1+here+SHIP_LEN*.02));
+  ship.grp.matrix.copy(_sm); ship.grp.matrixWorldNeedsUpdate=true;
+  // sails: trimmed to the wind, filled by it; furled when the sail level is low
+  const boom=clamp(-sail.windRel*.45,-1.1,1.1), fill=sail.level*(.35+.65*sail.polar);
+  for(const s of ship.sails){
+    s.piv.rotation.y+=(boom-s.piv.rotation.y)*Math.min(1,dt*3);
+    s.piv.scale.y=.12+.88*sail.level;
+    const a=s.g.attributes.position.array,b=s.base;
+    for(let i=0;i<a.length;i+=3){const u=b[i]/s.w*2,v=b[i+1]/s.h;a[i+2]=b[i+2]+fill*.09*(1-u*u)*Math.sin(Math.PI*clamp(v,0,1))*(boom<0?-1:1);}
+    s.g.attributes.position.needsUpdate=true;
+  }
+  ship.flagPiv.rotation.y=-sail.windRel+Math.PI/2;
+  { const a=ship.flagG.attributes.position.array,b=ship.flagBase;
+    for(let i=0;i<a.length;i+=3)a[i+2]=b[i+2]+Math.sin(b[i]*60-time*10)*.012*(b[i]/.12); ship.flagG.attributes.position.needsUpdate=true; }
+}
+function updateWake(dt){
+  const W_=wake;
+  if(sail.speed>.002&&!sail.aground){
+    W_.timer-=dt;
+    while(W_.timer<=0){
+      W_.timer+=.022*(.012/Math.max(sail.speed,.006));
+      for(const side of [-1,1]){
+        const w=W_.P[W_.next]; W_.next=(W_.next+1)%WAKE_N;
+        _sr.crossVectors(sail.fwd,sail.p).normalize();
+        w.d.copy(sail.p).addScaledVector(sail.fwd,-SHIP_LEN*.48).addScaledVector(_sr,side*SHIP_LEN*.1).normalize();
+        w.s.copy(_sr).multiplyScalar(side).addScaledVector(sail.fwd,(Math.random()-.5)*.6); w.born=time; w.life=2.2+Math.random()*1.2; w.spread=sail.speed*(.25+Math.random()*.2);
+      }
+    }
+  }
+  for(let i=0;i<WAKE_N;i++){
+    const w=W_.P[i],a=(time-w.born)/w.life,o=i*3;
+    if(a>=1||a<0){W_.age[i]=1;W_.pos[o]=W_.pos[o+1]=W_.pos[o+2]=0;continue;}
+    _sv.copy(w.d).addScaledVector(w.s,w.spread*(time-w.born)).normalize();
+    const r=1+seaOffset(_sv,sail.lake)+.0003;
+    W_.pos[o]=_sv.x*r;W_.pos[o+1]=_sv.y*r;W_.pos[o+2]=_sv.z*r;W_.age[i]=a;
+  }
+  W_.g.attributes.position.needsUpdate=true; W_.g.attributes.aAge.needsUpdate=true;
+  W_.pts.material.uniforms.uScale.value=innerHeight*renderer.getPixelRatio()/2/Math.tan(THREE.MathUtils.degToRad(camera.fov/2));
+}
+const _cT=new THREE.Vector3(),_cL=new THREE.Vector3(),_cU=new THREE.Vector3(),_back=new THREE.Vector3();
+const ease=t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
+// Chase camera behind the ship (orbitable), and the fly-in / fly-out between it and the planet view.
+function updateSailCamera(dt){
+  sail.dist+=(sail.distT-sail.dist)*(1-Math.exp(-dt*8));
+  const p=sail.p;
+  _back.copy(sail.fwd).negate().applyAxisAngle(p,sail.yaw);
+  const r=1+seaOffset(p,sail.lake);
+  _cT.copy(p).multiplyScalar(r).addScaledVector(_back,Math.cos(sail.pitch)*sail.dist).addScaledVector(p,Math.sin(sail.pitch)*sail.dist+.004).applyMatrix4(spin.matrixWorld);
+  _cL.copy(p).multiplyScalar(r+.004).applyMatrix4(spin.matrixWorld);
+  _cU.copy(p).transformDirection(spin.matrixWorld);
+  if(sail.phase==='in'||sail.phase==='out'){
+    sail.t=Math.min(1,sail.t+dt/1.7); const k=ease(sail.t);
+    if(sail.phase==='out'){ _cT.copy(CAM_DIR).multiplyScalar(camDist); _cL.set(0,0,0); _cU.set(0,1,0); }
+    // swing along a high arc: blend directions, ease the distance from the centre geometrically
+    const r0=sail.from.length(),r1=_cT.length(),rr=r0*Math.pow(r1/r0,k);
+    const dir=_sv.copy(sail.from).normalize().lerp(_sw.copy(_cT).normalize(),k).normalize();
+    camera.position.copy(dir).multiplyScalar(rr);
+    camera.up.copy(sail.fromUp).lerp(_cU,k).normalize();
+    camera.lookAt(_sq.copy(sail.fromLook).lerp(_cL,k));
+    if(sail.t>=1){
+      if(sail.phase==='in')sail.phase='sail';
+      else{sail.active=false;sail.phase='';ship.grp.visible=false;wake.pts.visible=false;document.body.classList.remove('sailing');camera.up.set(0,1,0);}
+    }
+    return;
+  }
+  camera.position.lerp(_cT,1-Math.exp(-dt*7));
+  camera.up.copy(_cU); camera.lookAt(_cL);
+}
+// Near the surface: near plane follows altitude, the inside sky fades in, distance haze closes in.
+function updateNearView(){
+  const alt=camera.position.length()-1, on=1-smooth(.06,.3,alt);
+  camera.near=clamp(alt*.25,.0006,.05); camera.updateProjectionMatrix();
+  sky.visible=on>.002; skyMat.uniforms.uOn.value=on; skyMat.uniforms.uGray.value=W.gray; skyMat.uniforms.uFog.value=W.fog;
+  const up=_sv.copy(camera.position).normalize(), day=smooth(-.18,.22,up.dot(SUN_DIR));
+  _horizon.setRGB(.5,.68,.9).multiplyScalar(day*.9+.04).lerp(_hc1.setRGB(.42,.45,.5),W.gray*.6).lerp(_hc2.setRGB(.72,.76,.82),W.fog*.6);
+  scene.fog.color.setRGB(_horizon.r*(.1+.9*day),_horizon.g*(.1+.9*day),_horizon.b*(.1+.9*day));
+  const far=THREE.MathUtils.lerp(.9,.18,W.fog)*(1-.3*W.rain/1.8);
+  scene.fog.near=on>.01?THREE.MathUtils.lerp(1000,far*.08,on):1000; scene.fog.far=on>.01?THREE.MathUtils.lerp(2000,far,on):2000;
+  starMat.opacity=1-on*day*.95;
+}
+function updateSailHUD(){
+  $('sailSet').textContent=['Sails furled','Half sail','Full sail'][Math.round(sail.level*2)];
+  $('speedTxt').textContent=`${(sail.speed*900).toFixed(1)} kn${sail.aground?' · aground':''}`;
+  $('windArrow').style.transform=`rotate(${(sail.windRel*180/Math.PI).toFixed(0)}deg)`;
+  $('windTxt').textContent=sail.polar>.9?'Beam reach':sail.polar<.2?'Into the wind':sail.polar<.7?(Math.abs(sail.windRel)<1?'Downwind':'Close-hauled'):'Good wind';
+}
+function sailPointer(type,e){
+  if(type==='down'){
+    sailPtrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(sailPtrs.size===2){const [a,b]=[...sailPtrs.values()];sailPinch=Math.hypot(a.x-b.x,a.y-b.y);}
+  }else if(type==='move'){
+    const p=sailPtrs.get(e.pointerId); if(!p)return;
+    const dx=e.clientX-p.x,dy=e.clientY-p.y; p.x=e.clientX;p.y=e.clientY;
+    if(sailPtrs.size===2){const [a,b]=[...sailPtrs.values()],d=Math.hypot(a.x-b.x,a.y-b.y);if(sailPinch>0&&d>0)sail.distT=clamp(sail.distT*sailPinch/d,.014,.2);sailPinch=d;}
+    else{sail.yaw-=dx*.008; sail.pitch=clamp(sail.pitch+dy*.005,.04,1.3);}
+  }else{sailPtrs.delete(e.pointerId);if(sailPtrs.size<2)sailPinch=0;}
+}
+const sailPtrs=new Map(); let sailPinch=0;
+
 /* ---------- fling: a fast spin squashes the planet and throws the clouds outward, then it all wobbles back ---------- */
 // Two damped springs chase targets set by the spin rate: one flattens the planet along its spin axis (bulging the
 // equator around it), one lifts the clouds. The axis is the globe's actual spin axis, held while the spin dies down.
@@ -1281,10 +1643,15 @@ function updateFling(dt){
 function frame(t){
   timer.update(t); const dt=Math.min(timer.getDelta(),.05); time+=dt;
   if(!editing&&!window.__tw?.spinOff) spin.rotation.y+=dt*.035;
+  if(sail.active&&sail.phase!=='out'){ updateShip(dt); if((hudT-=dt)<=0){hudT=.2;updateSailHUD();} }
   if(sculpting) sculptStep(dt);
   brushRing.visible=editing&&(haveHover||sculpting);
   if(brushRing.visible)placeRing();
-  updateGlobe(dt); updateFling(dt); updateWeather(dt); updateClouds(dt,time); updatePrecip(dt,time);
+  if(!sail.active)updateGlobe(dt);
+  updateFling(dt); updateWeather(dt); updateClouds(dt,time); updatePrecip(dt,time);
+  squash.updateMatrixWorld(true);
+  if(sail.active){ updateSailCamera(dt); updateWake(dt); }
+  updateNearView();
   camera.updateMatrixWorld(); squash.updateMatrixWorld(true); cullChunks();
   waterU.uNM.value.getNormalMatrix(_wmv.multiplyMatrices(camera.matrixWorldInverse,spin.matrixWorld));
   pumpJobs(7);
@@ -1292,7 +1659,9 @@ function frame(t){
   renderer.render(scene,camera);
 }
 requestAnimationFrame(()=>setTimeout(boot,30)); // let the loading screen paint first
-window.__tw={setWeather,heights,N,NC,get drawn(){return drawnCount;},get detailed(){return detailCount;},get jobs(){return jobs.length;},buildTime:()=>{const ch=chunks.find(c=>c.interest===2)||chunks[0];const t=performance.now();const g=buildFine(ch,2);while(!g.next().done);const t2=performance.now();const g1=buildFine(ch,1);while(!g1.next().done);return [(t2-t).toFixed(0),(performance.now()-t2).toFixed(0)];},stats:()=>chunks.map(c=>c.stats.map(v=>+v.toFixed(4))),lod:()=>chunks.filter(c=>c.vis).map(c=>[c.interest,c.want,c.target,c.shown]),get W(){return W;},get sea(){return seaLevel;},get lakes(){return lakeCount;},faceLake:()=>{let bi=-1;for(let i=0;i<N;i++)if(lakeV[i]&&heights[i]<-.004){bi=i;break;}if(bi<0)return false;const v=new THREE.Vector3(dirs[bi*3],dirs[bi*3+1],dirs[bi*3+2]);globe.quaternion.identity();globe.updateMatrixWorld(true);v.applyMatrix4(spin.matrixWorld).normalize();globe.quaternion.setFromUnitVectors(v,CAM_DIR);return true;},
+window.__tw={setWeather,sail,launchAt:(x,y,z)=>launchAt(new THREE.Vector3(x,y,z).normalize()),leaveSail,seaOffset:(x,y,z)=>seaOffset(new THREE.Vector3(x,y,z).normalize(),0),waterDir:(sunny)=>{const sl=SUN_DIR.clone().transformDirection(new THREE.Matrix4().copy(spin.matrixWorld).invert());let bi=-1,bd=-2;
+  for(let i=0;i<N;i+=37)if(heights[i]<-.03&&!lakeV[i]){const d=sunny?dirs[i*3]*sl.x+dirs[i*3+1]*sl.y+dirs[i*3+2]*sl.z-.0:1;if(d>bd){bd=d;bi=i;}if(!sunny)break;}
+  return [dirs[bi*3],dirs[bi*3+1],dirs[bi*3+2]];},heights,N,NC,get drawn(){return drawnCount;},get detailed(){return detailCount;},get jobs(){return jobs.length;},buildTime:()=>{const ch=chunks.find(c=>c.interest===2)||chunks[0];const t=performance.now();const g=buildFine(ch,2);while(!g.next().done);const t2=performance.now();const g1=buildFine(ch,1);while(!g1.next().done);return [(t2-t).toFixed(0),(performance.now()-t2).toFixed(0)];},stats:()=>chunks.map(c=>c.stats.map(v=>+v.toFixed(4))),lod:()=>chunks.filter(c=>c.vis).map(c=>[c.interest,c.want,c.target,c.shown]),get W(){return W;},get sea(){return seaLevel;},get lakes(){return lakeCount;},faceLake:()=>{let bi=-1;for(let i=0;i<N;i++)if(lakeV[i]&&heights[i]<-.004){bi=i;break;}if(bi<0)return false;const v=new THREE.Vector3(dirs[bi*3],dirs[bi*3+1],dirs[bi*3+2]);globe.quaternion.identity();globe.updateMatrixWorld(true);v.applyMatrix4(spin.matrixWorld).normalize();globe.quaternion.setFromUnitVectors(v,CAM_DIR);return true;},
   cloudU:cloudMat.uniforms,fling,ff:sec=>{for(let t=0;t<sec;t+=.05){time+=.05;updateWeather(.05);updateClouds(.05,time);}},view:(d,a)=>{camDist=camDistT=d;if(a!==null)globe.quaternion.setFromAxisAngle(UP,a);},flick:(x,y,z)=>omega.set(x,y,z),faceHeight:(h)=>{let bi=0,bd=1;for(let i=0;i<N;i+=3){const d=Math.abs(heights[i]-h);if(d<bd){bd=d;bi=i;}}
   const v=new THREE.Vector3(dirs[bi*3],dirs[bi*3+1],dirs[bi*3+2]);globe.quaternion.identity();globe.updateMatrixWorld(true);
   v.applyMatrix4(spin.matrixWorld).normalize();globe.quaternion.setFromUnitVectors(v,CAM_DIR);},globeQ:()=>globe.quaternion.toArray().map(v=>v.toFixed(4)).join(),sculptAt:(x,y,z,t)=>{hitDir.set(x,y,z).normalize();hitLocal.copy(hitDir);tool=t||'raise';beginStroke();for(let i=0;i<30;i++)sculptStep(.05);endStroke();},undo};

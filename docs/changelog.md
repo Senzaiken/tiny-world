@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-01: Set sail
+
+- **Sail mode:** tap **Sail**, then tap the sea, and a ship launches there.
+  - The camera flies down into a third-person chase view. Drag to look around, pinch to zoom, and tap **Planet** to fly back out.
+  - Hold ◀ / ▶ to steer and tap the sail button for furled, half or full sail. A/D and W/S work on a keyboard.
+- **Wind-driven sailing:** speed comes from the trade winds and a polar curve.
+  - A beam reach is fastest; heading into the wind nearly stops you.
+  - The calm belts leave you becalmed, and storms are fast.
+  - Lakes are slower.
+- **The ship rides the real sea:** it bobs, pitches and rolls on the exact swell, wind swell and tide the water shows. The swell is now four slow travelling waves instead of noise, so the ship can compute it too.
+  - It heels in the wind and in turns.
+  - Land stops it, so you sail around coastlines.
+  - It runs aground if the sea drains away.
+  - It leaves a foam wake.
+- **Near the surface** there's a real sky (blue with a sun, warm at dusk, grey in storms, pale in fog, dark at night with stars) and horizon haze. The near plane follows the camera so nothing clips close up.
+
 ## 2026-11-01: Lakes, trade winds, smoother sea and mountains
 
 - **Lakes vs oceans:** separate bodies of water are found by flood fill. Small enclosed ones are lakes: calm, darker green-blue, with no surf, tides or wind swell.

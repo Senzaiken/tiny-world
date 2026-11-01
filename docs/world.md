@@ -21,7 +21,7 @@ The sea has no mesh of its own. Every chunk has a second mesh that shares the ch
   - on the ocean, three wind-wave trains (110, 176 and 282 per radius) travelling downwind, spread ±25°, scaled by the wind's strength and broken up by slow noise.
   - Every layer fades out before it shrinks to a few pixels, so the sea stays smooth. Overall strength is 1.8 + 0.9 × wind.
 - **Swell and tides** move the surface itself:
-  - two layers of slow noise (up to about 0.002, and weaker on lakes);
+  - four slow travelling waves in different directions (frequencies 22 to 63, amplitudes 0.0009 to 0.0004, weaker on lakes). They're sines rather than noise so the ship can compute the same surface in JS (`SWELL`, `seaOffset`);
   - on the ocean, a wind swell of long crests rolling downwind (about 0.0016 × wind strength);
   - a tide of two bulges circling the planet every 31 seconds (0.0011, highest at the equator).
   - Together these make shorelines lap and slowly rise and fall.
