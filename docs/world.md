@@ -4,8 +4,22 @@
 
 - An icosphere built in-house: each of the icosahedron's 20 faces is a triangular grid with 256 segments per edge (`S`). That's 655,362 vertices and 1,310,720 triangles, about 0.7° between neighbours. It uses the same lattice as `THREE.IcosahedronGeometry(1, 255)`, which is why saves record `detail: 255`.
 - Each vertex stores a unit direction and a height. Its position is `direction × (1 + height)`.
-- Sea level is height 0. Water is a separate translucent sphere at radius 1.
+- Sea level is height 0. Water is a separate translucent sphere at radius 1 (see Water below).
 - Smooth shading, with normals averaged from the surrounding triangles. Vertex colours carry the biomes.
+- **Surface detail** is drawn per pixel by the terrain shader: five octaves of 3D value noise fixed to the planet, at 90 up to about 2,800 cycles per planet radius.
+  - It varies the colour and bumps the lighting. Rock gets strong grain, grass gets speckle, and bright sand and snow stay smooth. The kind of ground is read from the vertex colour's saturation and brightness.
+  - Each octave fades in only once it's bigger than about a pixel, so detail sharpens as you zoom in and costs nothing far away.
+
+## Water
+
+The sea is a standard PBR sphere (roughness 0.1, opacity 0.8) with waves added in its shaders:
+
+- Eight travelling sine waves, fixed to the planet's surface, at frequencies 32 to 350 per radius.
+- They tilt the normal, which gives rolling highlights and a glittering sun path. Strength is 1.8 + 0.9 × wind.
+- They also lift the surface by up to about 0.005 (scaled 0.6 + 0.4 × wind), so shorelines lap.
+- Each wave fades out once it's finer than a pixel, so distant water doesn't alias into sparkle grids.
+- A flat sky-blue environment map gives reflection at grazing angles (intensity 0.55, less in grey weather).
+- The water turns slate in storms.
 - Heights, normals and colours live in global arrays. The chunks below copy from them.
 
 ## Chunks
@@ -56,8 +70,8 @@ A single front-facing shell at radius 1.24 with a custom shader. For each pixel 
 - One warm directional sun plus a hemisphere fill light.
 - 1,800 background stars.
 - The camera stays put. Dragging spins the world itself (`globe`, which holds the planet, clouds, rain and lightning) around the axis perpendicular to the drag. That works on any axis, over the poles too. The sun and atmosphere stay fixed, so spinning sweeps day and night across the planet.
-  - Speed is 4.4 rad per screen width, scaled down when zoomed in.
-  - Letting go keeps the spin at the release speed: the rate is smoothed over the last few moves, and holding still before letting go means no spin. It then slows by 42%/s proportional plus 0.12 rad/s² constant drag, capped at 30 rad/s. A hard swipe glides for several seconds.
+  - Speed is 2.2 rad per screen width, scaled down when zoomed in.
+  - Letting go keeps the spin at the release speed: the rate is smoothed over the last few moves, and holding still before letting go means no spin. It then slows by 42%/s proportional plus 0.12 rad/s² constant drag, capped at 18 rad/s. A hard swipe glides for several seconds.
   - Touching the planet again catches it.
 - Pinch or the mouse wheel zooms (distance 1.55 to 14, eased). The starting distance is fitted to the screen's narrow side.
 - A loading screen shows while the world is generated (about a second on a phone).
@@ -67,7 +81,7 @@ A single front-facing shell at radius 1.24 with a custom shader. For each pixel 
 Swiping fast makes the planet squash and stretch like a cartoon, and throws the clouds outward. Both spring back with a wobble.
 
 - The spin rate and axis come from the globe's own angular velocity: the drag rate while a finger is down, the glide afterwards. The axis follows quickly and holds while the spin dies down.
-- Slow and medium spins do nothing. A careful drag peaks at about 4 rad/s, while a real swipe is 15 to 30.
-- **Squash spring** (stiffness 170, damping 9): it starts above 7 rad/s and reaches 0.12 at about 16 rad/s. The planet shrinks by that fraction along the spin axis and bulges around it, keeping its volume. This is a matrix on the `squash` group, which sits outside the spinning globe so the bulge stays aligned with the axis while the planet turns inside it.
-- **Cloud spring** (stiffness 45, damping 4.5): it starts above 6 rad/s and reaches 0.16. Clouds rise by that fraction of their altitude, and their wisps grow by 80% of it. Rain and snow follow the clouds.
-- The atmosphere glow isn't squashed.
+- Slow and medium spins do nothing. A careful drag peaks at about 2 rad/s, while a real swipe is 8 to 15.
+- **Squash spring** (stiffness 170, damping 9): it starts above 4 rad/s and reaches 0.12 at 9 rad/s. The planet shrinks by that fraction along the spin axis and bulges around it, keeping its volume. This is a matrix on the `squash` group, which sits outside the spinning globe so the bulge stays aligned with the axis while the planet turns inside it.
+- **Cloud spring** (stiffness 45, damping 4.5): it starts above 3.5 rad/s and reaches 0.16 at 8.5 rad/s. Clouds rise by that fraction of their altitude, and their wisps grow by 80% of it. Rain and snow follow the clouds.
+- The atmosphere squashes with the planet. Its mesh sits in the `squash` group, and its shader undoes the squash (`uInv`) so the glow maths still runs on a unit sphere.

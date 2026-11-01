@@ -106,7 +106,7 @@ import * as THREE from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { computeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
-const BUILD='20261101151200';
+const BUILD='20261101152003';
 const SAVE_KEY='tinyworld-save-v1'; // the key stays the same; the save itself carries a format version
 const $=id=>document.getElementById(id);
 const clamp=(x,a,b)=>x<a?a:x>b?b:x;
@@ -241,6 +241,36 @@ const vtStart=new Uint32Array(N+1), vtList=(()=>{
   for(let k=0;k<TRI.length;k++)out[fill[TRI[k]]++]=(k/3)|0;return out;
 })();
 const terrainMat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:.9,metalness:0});
+/* Surface detail: vertex colours only change every ~0.7°, so close up the ground needs its own texture. Five octaves
+   of 3D value noise, fixed to the planet, vary the colour and bump the lighting: rock gets coarse grain, grass
+   speckle, sand and snow stay smooth. Each octave fades in only once it is bigger than a pixel, so detail sharpens
+   as you zoom in and costs nothing far away. */
+terrainMat.onBeforeCompile=sh=>{
+  sh.vertexShader=sh.vertexShader.replace('#include <common>','#include <common>\nvarying vec3 vObj;')
+    .replace('#include <begin_vertex>','#include <begin_vertex>\nvObj=position;');
+  sh.fragmentShader=sh.fragmentShader.replace('#include <common>',`#include <common>
+    varying vec3 vObj; float tdH; float tdRock;
+    float hash3(vec3 p){ p=fract(p*.3183099+.1); p*=17.; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
+    float vnoise(vec3 x){ vec3 i=floor(x),f=fract(x); f=f*f*(3.-2.*f);
+      return mix(mix(mix(hash3(i),hash3(i+vec3(1,0,0)),f.x),mix(hash3(i+vec3(0,1,0)),hash3(i+vec3(1,1,0)),f.x),f.y),
+                 mix(mix(hash3(i+vec3(0,0,1)),hash3(i+vec3(1,0,1)),f.x),mix(hash3(i+vec3(0,1,1)),hash3(i+vec3(1,1,1)),f.x),f.y),f.z); }
+    float detail(vec3 p,float fw){ float s=0.,a=.5,f=90.;
+      for(int k=0;k<5;k++){ float w=1.-smoothstep(.25,.9,f*fw); if(w<=0.)break;
+        s+=(vnoise(p*f)-.5)*a*w; a*=.55; f*=2.37; }
+      return s; }`)
+    .replace('#include <color_fragment>',`#include <color_fragment>
+      { float mx=max(vColor.r,max(vColor.g,vColor.b)),mn=min(vColor.r,min(vColor.g,vColor.b));
+        float sat=(mx-mn)/max(mx,.001);
+        tdRock=(1.-smoothstep(.15,.45,sat))*(1.-smoothstep(.55,.8,mx));   // greyish and not bright: rock
+        float smoothGround=smoothstep(.55,.85,mx)*(1.-smoothstep(.2,.5,sat)); // bright: snow and sand
+        tdH=detail(vObj,length(fwidth(vObj)));
+        diffuseColor.rgb*=1.+tdH*mix(.55,1.1,tdRock)*(1.-smoothGround*.7); }`)
+    .replace('#include <normal_fragment_begin>',`#include <normal_fragment_begin>
+      { vec3 sp=-vViewPosition, sx=dFdx(sp), sy=dFdy(sp), r1=cross(sy,normal), r2=cross(normal,sx);
+        float det=dot(sx,r1), h=tdH*mix(.0012,.0035,tdRock);
+        vec3 grad=sign(det)*(dFdx(h)*r1+dFdy(h)*r2);
+        normal=normalize(abs(det)*normal-grad); }`);
+};
 /* chunk meshes */
 const chunks=[];
 {
@@ -279,8 +309,40 @@ function icosphere(detail){
   return mergeVertices(g);
 }
 
-const water=new THREE.Mesh(new THREE.SphereGeometry(1,192,128),
-  new THREE.MeshStandardMaterial({color:0x2b7fbf,roughness:.34,metalness:0,transparent:true,opacity:.8}));
+/* water: a standard PBR sphere with waves added in its shaders. Eight travelling sine waves, fixed to the planet's
+   surface, perturb the normal (rolling highlights and a glittering sun path) and lift the surface slightly, so the
+   shoreline laps. A flat sky-blue environment gives the reflection at grazing angles. */
+const WAVES=[ // direction seed, frequency, amplitude, speed
+  [1,32,.0016,.9],[2,47,.0011,-1.1],[3,71,.0007,1.3],[4,96,.0005,-1.6],
+  [5,140,.00034,2.0],[6,190,.00024,-2.4],[7,260,.00016,2.9],[8,350,.00011,-3.3]];
+const waterEnv=(()=>{const sc=new THREE.Scene();sc.background=new THREE.Color(0x7aa3d8);
+  const pm=new THREE.PMREMGenerator(renderer),t=pm.fromScene(sc,0).texture;pm.dispose();return t;})();
+const waterU={uTime:{value:0},uWave:{value:1},uSwell:{value:1},uNM:{value:new THREE.Matrix3()}};
+const waterMat=new THREE.MeshStandardMaterial({color:0x2b7fbf,roughness:.1,metalness:0,transparent:true,opacity:.8,envMap:waterEnv,envMapIntensity:.55});
+waterMat.onBeforeCompile=sh=>{
+  Object.assign(sh.uniforms,waterU);
+  const r=mulberry32(31337);
+  const dirs=WAVES.map(()=>{const u=r()*2-1,a=r()*6.283,q=Math.sqrt(1-u*u);return`vec3(${(Math.cos(a)*q).toFixed(4)},${u.toFixed(4)},${(Math.sin(a)*q).toFixed(4)})`;});
+  const f=v=>v.toFixed(5);
+  const fn=`uniform float uTime; uniform float uWave; uniform float uSwell; varying vec3 vObj;
+    const vec3 WD[8]=vec3[8](${dirs.join(',')});
+    const float WF[8]=float[8](${WAVES.map(w=>f(w[1])).join(',')});
+    const float WA[8]=float[8](${WAVES.map(w=>f(w[2])).join(',')});
+    const float WS[8]=float[8](${WAVES.map(w=>f(w[3])).join(',')});
+    // fw = surface distance per pixel: waves too fine to resolve fade out instead of aliasing into sparkle grids
+    vec4 waves(vec3 p,float fw){ vec3 g=vec3(0.); float h=0.;
+      for(int k=0;k<8;k++){ float ph=dot(WD[k],p)*WF[k]+uTime*WS[k], fade=1.-smoothstep(.35,1.4,WF[k]*fw);
+        h+=WA[k]*sin(ph); g+=WA[k]*WF[k]*cos(ph)*WD[k]*fade; }
+      return vec4(g,h); }`;
+  sh.vertexShader=sh.vertexShader.replace('#include <common>','#include <common>\n'+fn)
+    .replace('#include <begin_vertex>','#include <begin_vertex>\n vObj=position; transformed+=normal*waves(position,0.).w*uSwell;');
+  sh.fragmentShader=sh.fragmentShader.replace('#include <common>','#include <common>\nuniform mat3 uNM;\n'+fn)
+    .replace('#include <normal_fragment_begin>',`#include <normal_fragment_begin>
+      { vec3 g=uNM*waves(vObj,length(fwidth(vObj))).xyz; normal=normalize(normal-(g-normal*dot(g,normal))*uWave); }`);
+};
+const water=new THREE.Mesh(new THREE.SphereGeometry(1,256,160),waterMat);
+const _wmv=new THREE.Matrix4();
+water.onBeforeRender=(r,s,cam)=>{_wmv.multiplyMatrices(cam.matrixWorldInverse,water.matrixWorld);waterU.uNM.value.getNormalMatrix(_wmv);};
 water.renderOrder=1; spin.add(water);
 
 const fogShell=new THREE.Mesh(new THREE.SphereGeometry(1.032,96,72),
@@ -424,23 +486,25 @@ function cullChunks(){
 /* ---------- atmosphere (one front-side shell: limb haze + outer glow) ---------- */
 const ATMO_R=1.24;
 const atmoMat=new THREE.ShaderMaterial({
-  uniforms:{uColor:{value:new THREE.Color(0x5aa2ff)},uStrength:{value:1},uSun:{value:SUN_DIR.clone()},uR:{value:ATMO_R}},
+  uniforms:{uColor:{value:new THREE.Color(0x5aa2ff)},uStrength:{value:1},uSun:{value:SUN_DIR.clone()},uR:{value:ATMO_R},uInv:{value:new THREE.Matrix3()}},
   vertexShader:`varying vec3 vW; void main(){ vec4 w=modelMatrix*vec4(position,1.); vW=w.xyz; gl_Position=projectionMatrix*viewMatrix*w; }`,
-  fragmentShader:`uniform vec3 uColor; uniform float uStrength; uniform vec3 uSun; uniform float uR; varying vec3 vW;
+  // Works in the planet's un-squashed space (uInv undoes the fling squash), where the planet is a unit sphere.
+  fragmentShader:`uniform vec3 uColor; uniform float uStrength; uniform vec3 uSun; uniform float uR; uniform mat3 uInv; varying vec3 vW;
   void main(){
-    vec3 d=normalize(vW-cameraPosition);
-    float t0=-dot(cameraPosition,d);
-    vec3 cp=cameraPosition+d*t0; float b=length(cp);
+    vec3 cam=uInv*cameraPosition;
+    vec3 d=normalize(uInv*vW-cam);
+    float t0=-dot(cam,d);
+    vec3 cp=cam+d*t0; float b=length(cp);
     float a; vec3 n;
     if(b>1.0){ float g=clamp((uR-b)/(uR-1.0),0.,1.); a=pow(g,2.4)*1.15; n=normalize(cp); }
-    else { a=pow(b,5.0)*.6+.035; n=normalize(cameraPosition+d*(t0-sqrt(1.0-b*b))); }
+    else { a=pow(b,5.0)*.6+.035; n=normalize(cam+d*(t0-sqrt(1.0-b*b))); }
     float s=dot(n,uSun);
     float lit=smoothstep(-.35,.45,s);
     vec3 col=uColor*(.1+.9*lit)+vec3(1.,.45,.2)*exp(-s*s/.04)*.35;
     gl_FragColor=vec4(col*a*uStrength,1.);
   }`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
-const atmo=new THREE.Mesh(new THREE.SphereGeometry(ATMO_R,96,64),atmoMat); atmo.renderOrder=5; scene.add(atmo);
+const atmo=new THREE.Mesh(new THREE.SphereGeometry(ATMO_R,96,64),atmoMat); atmo.renderOrder=5; squash.add(atmo);
 
 /* ---------- clouds: soft shader-lit wisps in clusters that circle the world, plus high cirrus ---------- */
 // Each cluster is a flat-bottomed heap of camera-facing sprites. A noise texture frays their edges, and each one
@@ -649,7 +713,7 @@ const PRESETS={
   fog:   {cirrus:.25,label:'Fog',   cover:.3, gray:.18,sun:1.5,hemi:.75,rain:0,  snow:0,storm:0,fog:1,wind:.6, atmo:0xc2cad6,atmoS:1.25},
 };
 const W={...PRESETS.clear}; let wxTarget=PRESETS.clear, wxName='clear';
-const atmoTarget=new THREE.Color();
+const atmoTarget=new THREE.Color(); const waterBlue=new THREE.Color(0x2b7fbf), waterGrey=new THREE.Color(0x2a4a63);
 function setWeather(name){
   wxTarget=PRESETS[name]; wxName=name; $('wxLabel').textContent=wxTarget.label;
   document.querySelectorAll('#weather button').forEach(b=>b.setAttribute('aria-pressed',b.dataset.wx===name));
@@ -674,6 +738,8 @@ function updateWeather(dt){
   if(boltLife>0){boltLife-=dt;bolt.material.opacity=clamp(boltLife/.18,0,1);if(boltLife<=0)bolt.visible=false;}
   flash=Math.max(0,flash-dt*5);
   sun.intensity=W.sun; hemi.intensity=W.hemi+flash*2.2;
+  waterU.uTime.value+=dt; waterU.uWave.value=1.8+W.wind*.9; waterU.uSwell.value=.6+W.wind*.4;
+  waterMat.color.copy(waterBlue).lerp(waterGrey,W.gray*.7); waterMat.envMapIntensity=.55*(1-W.gray*.6);
   cloudMat.uniforms.uGray.value=W.gray; cloudMat.uniforms.uFlash.value=flash;
   cirrus.material.opacity=W.cirrus*(1-W.fog*.5);
 }
@@ -695,13 +761,13 @@ function pick(e){
    One finger spins the world itself around the axis perpendicular to the drag (any axis, over the poles too).
    Letting go keeps it spinning at the release speed, slowing gently; touching it again catches it.
    Two fingers pinch to zoom; the mouse wheel zooms. In Sculpt mode a touch that lands on the planet sculpts. */
-const CAM_DIR=new THREE.Vector3(0,.35,1).normalize(), MIN_DIST=1.55, MAX_DIST=14, FRICTION=.42, MAX_SPIN=30;
+const CAM_DIR=new THREE.Vector3(0,.35,1).normalize(), MIN_DIST=1.55, MAX_DIST=14, FRICTION=.42, MAX_SPIN=18;
 let camDist=4, camDistT=4, homeDist=4, dragId=null, lastMoveT=0, pinchD=0;
 const omega=new THREE.Vector3(), dragV=new THREE.Vector3();  // spin velocity (rad/s, view-space axis × rate)
 const ptrs=new Map();
 const _ax=new THREE.Vector3(),_dq=new THREE.Quaternion(),_camR=new THREE.Vector3(),_camU=new THREE.Vector3(),_iv=new THREE.Vector3();
 function rotateBy(dx,dy){
-  const k=4.4/Math.min(innerWidth,innerHeight)*clamp(camDist/homeDist,.35,1.5);   // radians per pixel
+  const k=2.2/Math.min(innerWidth,innerHeight)*clamp(camDist/homeDist,.35,1.5);   // radians per pixel
   _camR.setFromMatrixColumn(camera.matrixWorld,0); _camU.setFromMatrixColumn(camera.matrixWorld,1);
   _ax.copy(_camR).multiplyScalar(dy).addScaledVector(_camU,dx);
   const len=_ax.length(); if(len<1e-6)return 0;
@@ -944,8 +1010,8 @@ function updateFling(dt){
   const v=dragId!==null?dragV:omega, w=v.length();
   fling.rate=w;
   if(w>.2){_fa.copy(v).multiplyScalar(1/w);if(_fa.dot(fling.axis)<0)_fa.negate();fling.axis.lerp(_fa,1-Math.exp(-dt*14)).normalize();}
-  // Only a real fling counts: a slow drag spins at up to ~4 rad/s, a hard swipe at 15-30 rad/s.
-  const st=clamp((w-7)*.0133,0,.12), ct=clamp((w-6)*.016,0,.16);
+  // Only a real fling counts: a slow drag spins at up to ~2 rad/s, a hard swipe at 8-15 rad/s.
+  const st=clamp((w-4)*.024,0,.12), ct=clamp((w-3.5)*.032,0,.16);
   fling.sv+=(-(fling.squash-st)*170-fling.sv*9)*dt; fling.squash+=fling.sv*dt;   // stiff and bouncy
   fling.cv+=(-(fling.cloud-ct)*45-fling.cv*4.5)*dt; fling.cloud+=fling.cv*dt;     // softer and slower
   // M = sp·I + (sa−sp)·a·aᵀ: shrink along the spin axis, bulge around it, keeping the volume about the same
@@ -956,6 +1022,7 @@ function updateFling(dt){
     k*a.z*a.x,    k*a.z*a.y,    sp+k*a.z*a.z, 0,
     0,0,0,1);
   squash.matrixWorldNeedsUpdate=true;
+  atmoMat.uniforms.uInv.value.setFromMatrix4(squash.matrix).invert();
 }
 function frame(t){
   timer.update(t); const dt=Math.min(timer.getDelta(),.05); time+=dt;
@@ -970,7 +1037,9 @@ function frame(t){
 }
 requestAnimationFrame(()=>setTimeout(boot,30)); // let the loading screen paint first
 window.__tw={setWeather,heights,N,NC,get drawn(){return drawnCount;},get W(){return W;},
-  cloudU:cloudMat.uniforms,fling,ff:sec=>{for(let t=0;t<sec;t+=.05){time+=.05;updateWeather(.05);updateClouds(.05,time);}},view:(d,a)=>{camDist=camDistT=d;globe.quaternion.setFromAxisAngle(UP,a);},flick:(x,y,z)=>omega.set(x,y,z),globeQ:()=>globe.quaternion.toArray().map(v=>v.toFixed(4)).join(),sculptAt:(x,y,z,t)=>{hitDir.set(x,y,z).normalize();hitLocal.copy(hitDir);tool=t||'raise';beginStroke();for(let i=0;i<30;i++)sculptStep(.05);endStroke();},undo};
+  cloudU:cloudMat.uniforms,fling,ff:sec=>{for(let t=0;t<sec;t+=.05){time+=.05;updateWeather(.05);updateClouds(.05,time);}},view:(d,a)=>{camDist=camDistT=d;if(a!==null)globe.quaternion.setFromAxisAngle(UP,a);},flick:(x,y,z)=>omega.set(x,y,z),faceHeight:(h)=>{let bi=0,bd=1;for(let i=0;i<N;i+=3){const d=Math.abs(heights[i]-h);if(d<bd){bd=d;bi=i;}}
+  const v=new THREE.Vector3(dirs[bi*3],dirs[bi*3+1],dirs[bi*3+2]);globe.quaternion.identity();globe.updateMatrixWorld(true);
+  v.applyMatrix4(spin.matrixWorld).normalize();globe.quaternion.setFromUnitVectors(v,CAM_DIR);},globeQ:()=>globe.quaternion.toArray().map(v=>v.toFixed(4)).join(),sculptAt:(x,y,z,t)=>{hitDir.set(x,y,z).normalize();hitLocal.copy(hitDir);tool=t||'raise';beginStroke();for(let i=0;i<30;i++)sculptStep(.05);endStroke();},undo};
 </script>
 </body>
 </html>

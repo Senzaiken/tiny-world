@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-01: Calmer drag, living water, sharp close-ups
+
+- **Drag speed halved** to 2.2 rad per screen width, with a maximum spin of 18 rad/s. Fling thresholds moved to match: squash from 4 rad/s, clouds from 3.5 rad/s.
+- **The atmosphere squashes** along with the planet when flung.
+- **Water:**
+  - eight travelling waves roll the highlights and glitter in the sun path,
+  - a slight swell makes shorelines lap,
+  - it reflects the sky at grazing angles,
+  - waves get stronger with wind, and the sea turns slate in storms.
+- **Terrain surface detail** is drawn per pixel: rock grain, grass speckle and bump lighting, with finer layers fading in as you zoom closer.
+
 ## 2026-11-01: Real flinging
 
 - **Spinning moves the world, not the camera.** Drag spins the planet around the axis perpendicular to the drag, in any direction and over the poles. Day and night sweep across it as it turns.
