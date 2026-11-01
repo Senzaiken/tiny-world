@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-01: Chunked smooth world, soft clouds, fling
+
+- **4× more detail again:** 655,362 vertices (256 segments per icosahedron edge), with smooth shading instead of flat facets.
+- **Chunks:**
+  - The planet is now 200 chunks.
+  - Sculpting re-uploads only the chunks it touches.
+  - Only chunks inside the view and over the horizon are drawn (about two thirds at the default zoom, around 25 close up).
+  - Weather recolouring walks the chunks a batch at a time.
+- **Clouds:** the sphere puffs are replaced by heaps of soft, shader-lit wisps with frayed edges. They have grey undersides, warm light along the day/night line, near-black storm clouds, and in-cloud lightning. A drifting layer of high cirrus is added.
+- **Rain** now falls from the cloud base and is fainter.
+- **Fling:** swipe fast and the planet squashes and stretches around its spin axis, and the clouds are thrown outward, then both wobble back.
+- **Undo** now records only the vertices each stroke touched, and keeps 30 strokes.
+- **Saves:** format v2 stores the gzipped difference from the generated terrain, which is a few KB for a fresh sculpt. Older saves (v1, on the 63- or 127-detail meshes) are carried over by barycentric resampling.
+- A loading screen shows while the world builds.
+
 ## 2026-11-01: Higher-resolution planet
 
 - The planet mesh is 4× finer: `DETAIL` went from 63 to 127, which means 163,842 vertices. Coastlines, ridges and sculpting are much smoother.

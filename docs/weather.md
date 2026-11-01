@@ -15,15 +15,28 @@ The atmosphere colour and strength also change per preset. It turns greyer and d
 
 ## Clouds
 
-- 64 clusters of 3 to 7 flattened low-poly puffs, drawn as one instanced mesh.
-- They orbit eastward at altitude 1.17 to 1.23. Each cluster has its own speed, multiplied by the preset's wind value, and a slow north–south wobble.
-- Each cluster has a random rank. It fades in when its rank is below the current cover value and fades out when it isn't.
-- Colour runs from white toward dark slate as grey rises. Puffs also swell up to 25% in grey weather.
+- 56 clusters of 16 to 30 soft "wisps" each. A wisp is a camera-facing sprite drawn by a custom shader, and all of them are one instanced mesh.
+- Each cluster is a flat-bottomed heap, stretched east–west.
+- The shader frays each wisp's edges with two layers of a slowly drifting noise texture. Its shading comes from:
+  - its height in the heap (grey underneath, bright on top),
+  - which side of the planet it's on (dark at night, with a warm tint at the day/night line),
+  - the weather's greyness, reaching near-black slate in storms,
+  - lightning, which lights the clouds from inside.
+- Clusters orbit eastward at altitude 1.17 to 1.22. Each has its own speed, multiplied by the preset's wind value, and a slow north–south wobble.
+- Each cluster has a random rank. It fades in when its rank is below the current cover value and fades out when it isn't. Wisps also swell up to 30% in grey weather.
+
+## Cirrus
+
+High streaky cirrus sits on a shell at radius 1.255. Its texture is generated at load from noise stretched east–west and broken into patches. The shell drifts eastward and is drawn additively, so it brightens the sky and never darkens it. Its opacity per preset:
+
+| Clear | Cloudy | Rain | Storm | Snow | Fog |
+|---|---|---|---|---|---|
+| 0.55 | 0.45 | 0.2 | 0.08 | 0.3 | 0.25 |
 
 ## Rain and snow
 
-- Precipitation only falls from clusters that are mostly faded in. Each drop belongs to a cloud and falls straight down toward sea level, drifting along with its cloud.
-- **Rain:** up to 2,600 short streaks (1,300 × the rain value). Streaks are longer, faster and more slanted in storms.
+- Precipitation only falls from clusters that are mostly faded in. Each drop belongs to a cloud and falls from its base straight down toward sea level, drifting along with its cloud.
+- **Rain:** up to 2,600 short, faint streaks (1,300 × the rain value). Streaks are longer, faster and more slanted in storms.
 - **Snow:** up to 1,600 soft flakes that fall slowly and sway.
 
 ## Storms

@@ -4,7 +4,7 @@ Tap **Sculpt** to open the edit panel. While it's open, the planet stops auto-sp
 
 ## Picking
 
-The brush finds the ground with a raycast through a bounding-volume tree (three-mesh-bvh). The tree is refit every 4 frames during a stroke and again when it ends.
+The brush finds the ground with a raycast against the chunks being drawn, each through its own bounding-volume tree (three-mesh-bvh). The ray is re-cast every frame during a stroke, so the brush rides the ground as it rises or sinks. Only chunks within the brush's reach are scanned for vertices.
 
 ## Gestures
 
@@ -29,11 +29,11 @@ Heights are clamped to the range −0.16 to 0.3.
 
 ## Undo
 
-Each stroke saves a snapshot first. Undo (↶) steps back through the last 15 strokes.
+Each stroke records the original height of every vertex it touches, the first time it touches it. Undo (↶) restores those heights, up to the last 30 strokes.
 
 ## Saving
 
-- The app saves to `localStorage` under `tinyworld-save-v1`. The save holds the seed, the weather and, once you've sculpted, every vertex height as Int16 (about 440 KB).
+- The app saves to `localStorage` under `tinyworld-save-v1`. Format version 2 holds the seed, the weather and, once you've sculpted, the difference from the generated terrain: Int16 ×50000, gzipped with `CompressionStream`, falling back to raw. A sculpted fresh world is a few KB.
 - It saves 0.4 seconds after a stroke or a weather change, and whenever the app goes to the background.
-- A world sculpted on the previous half-resolution mesh (`DETAIL` 63) is carried over when it loads. Old vertices keep their heights, and each new in-between vertex takes the mean of its old neighbours.
+- Version 1 saves held absolute heights ×100000 on the older meshes (`DETAIL` 63 or 127). They're carried over when they load: each new vertex lies on a face of the old lattice and takes that triangle's barycentric blend of the old heights. A carried-over world saves larger (about 1 MB), since it differs from the generated terrain everywhere.
 - **New world** rolls a new seed. If you've sculpted, it asks first.
