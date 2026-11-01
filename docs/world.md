@@ -4,7 +4,7 @@
 
 - An icosphere built in-house: each of the icosahedron's 20 faces is a triangular grid with 256 segments per edge (`S`). That's 655,362 vertices and 1,310,720 triangles, about 0.7° between neighbours. It uses the same lattice as `THREE.IcosahedronGeometry(1, 255)`, which is why saves record `detail: 255`.
 - Each vertex stores a unit direction and a height. Its position is `direction × (1 + height)`.
-- Sea level is height 0. Water is a separate translucent sphere at radius 1 (see Water below).
+- Sea level is height 0 (it rises in rain; see the weather page). The water is drawn on the terrain's own chunks (see Water below).
 - Smooth shading, with normals averaged from the surrounding triangles. Vertex colours carry the biomes.
 - **Surface detail** is drawn per pixel by the terrain shader: five octaves of 3D value noise fixed to the planet, at 90 up to about 2,800 cycles per planet radius.
   - It varies the colour and bumps the lighting. Rock gets strong grain, grass gets speckle, and bright sand and snow stay smooth. The kind of ground is read from the vertex colour's saturation and brightness.
@@ -12,14 +12,14 @@
 
 ## Water
 
-The sea is a standard PBR sphere (roughness 0.1, opacity 0.8) with waves added in its shaders:
+The sea has no mesh of its own. Every chunk has a second mesh that shares the chunk's geometry and draws it with the water material: the vertex shader moves each terrain vertex out to the sea surface, and the original height gives the depth there. Fine-detail chunks get a water mesh on their fine geometry too. Chunks whose lowest point is above 0.03 skip water.
 
-- Eight travelling sine waves, fixed to the planet's surface, at frequencies 32 to 350 per radius.
-- They tilt the normal, which gives rolling highlights and a glittering sun path. Strength is 1.8 + 0.9 × wind.
-- They also lift the surface by up to about 0.005 (scaled 0.6 + 0.4 × wind), so shorelines lap.
-- Each wave fades out once it's finer than a pixel, so distant water doesn't alias into sparkle grids.
-- A flat sky-blue environment map gives reflection at grazing angles (intensity 0.55, less in grey weather).
-- The water turns slate in storms.
+- **Depth:** turquoise in the first 0.014 of depth, deep blue below. Opacity goes from 0.3 in the shallows to 0.88 in deep water, and fades to zero right at the waterline. Because the water and the land use the same triangles, the fade follows the true shoreline exactly.
+- **Surf:** a thin white lip at the waterline, plus foam bands parallel to the shore that roll inward within 0.004 of depth, broken up by noise. Bands fade out when they'd be finer than a pixel. Foam is rough, not shiny.
+- **Ripples:** four octaves of drifting 3D value noise (55 to about 530 per radius), applied as a bump. Strength is 1.8 + 0.9 × wind. Octaves finer than a pixel fade out, so there are no global stripes or sparkle grids.
+- **Swell:** two layers of slow noise lift the surface by up to about 0.002 (scaled 0.6 + 0.4 × wind), so shorelines lap.
+- A flat sky-blue environment map gives reflection at grazing angles (intensity 0.55, less in grey weather). The water turns slate in storms.
+- **Wet ground:** the terrain shader darkens a band 0.003 either side of the current sea level.
 - Heights, normals and colours live in global arrays. The chunks below copy from them.
 
 ## Chunks
@@ -56,7 +56,7 @@ Generation is seeded, so a seed always rebuilds the same world.
 1. **Domain warp.** Low-frequency noise bends the sample point, which makes coastlines wander.
 2. **Continents.** 6-octave fBm, offset by −0.04, gives roughly 40 to 50% land.
    - Ocean: `height = continent × 0.2`, floored at −0.09.
-   - Land: `0.004 + continent × 0.05`.
+   - Land: `0.004 × smoothstep(0, 0.035, continent) + continent × 0.05`. That's a gentle ramp up from the shore, with no step at sea level, which used to make stair-stepped coastlines.
 3. **Mountains.** Ridged noise is added only inland, and only inside broad "range" regions picked by a second low-frequency noise. It adds up to about 0.12.
 4. **Detail.** A small high-frequency ripple (±0.0015).
 

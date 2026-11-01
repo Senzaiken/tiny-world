@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-01: Smooth coasts and a real shoreline
+
+- **Smooth coastlines:** the generator no longer puts a small cliff at sea level, which made coasts snap to the mesh grid and show a dark stair-step edge. Land now ramps gently up from the water. Sculpted worlds keep their sculpting, though shorelines shift slightly.
+- **The sea is drawn on the terrain chunks** and knows its depth everywhere:
+  - clear turquoise shallows,
+  - a soft fade at the waterline,
+  - a white surf lip, with foam lines rolling in to the shore,
+  - wet, darker ground right at the water's edge.
+- **Ripples are drifting noise** instead of eight global waves, so the crossing stripes seen from afar are gone.
+
 ## 2026-11-01: Adaptive detail, rising seas
 
 - **Adaptive detail:** chunks with mountains, rough land or coastline are rebuilt at 2× or 4× resolution when they're big on screen.

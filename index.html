@@ -106,7 +106,7 @@ import * as THREE from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { computeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
-const BUILD='20261101153402';
+const BUILD='20261101155302';
 const SAVE_KEY='tinyworld-save-v1'; // the key stays the same; the save itself carries a format version
 const $=id=>document.getElementById(id);
 const clamp=(x,a,b)=>x<a?a:x>b?b:x;
@@ -240,16 +240,18 @@ const vtStart=new Uint32Array(N+1), vtList=(()=>{
   const out=new Uint32Array(a),fill=vtStart.slice(0,N);
   for(let k=0;k<TRI.length;k++)out[fill[TRI[k]]++]=(k/3)|0;return out;
 })();
+const seaU={value:0}; // current sea level, shared by the water and terrain shaders
 const terrainMat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:.9,metalness:0});
 /* Surface detail: vertex colours only change every ~0.7°, so close up the ground needs its own texture. Five octaves
    of 3D value noise, fixed to the planet, vary the colour and bump the lighting: rock gets coarse grain, grass
    speckle, sand and snow stay smooth. Each octave fades in only once it is bigger than a pixel, so detail sharpens
    as you zoom in and costs nothing far away. */
 terrainMat.onBeforeCompile=sh=>{
+  sh.uniforms.uSea=seaU;
   sh.vertexShader=sh.vertexShader.replace('#include <common>','#include <common>\nvarying vec3 vObj;')
     .replace('#include <begin_vertex>','#include <begin_vertex>\nvObj=position;');
   sh.fragmentShader=sh.fragmentShader.replace('#include <common>',`#include <common>
-    varying vec3 vObj; float tdH; float tdRock;
+    varying vec3 vObj; uniform float uSea; float tdH; float tdRock;
     float hash3(vec3 p){ p=fract(p*.3183099+.1); p*=17.; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
     float vnoise(vec3 x){ vec3 i=floor(x),f=fract(x); f=f*f*(3.-2.*f);
       return mix(mix(mix(hash3(i),hash3(i+vec3(1,0,0)),f.x),mix(hash3(i+vec3(0,1,0)),hash3(i+vec3(1,1,0)),f.x),f.y),
@@ -264,7 +266,9 @@ terrainMat.onBeforeCompile=sh=>{
         tdRock=(1.-smoothstep(.15,.45,sat))*(1.-smoothstep(.55,.8,mx));   // greyish and not bright: rock
         float smoothGround=smoothstep(.55,.85,mx)*(1.-smoothstep(.2,.5,sat)); // bright: snow and sand
         tdH=detail(vObj,length(fwidth(vObj)));
-        diffuseColor.rgb*=1.+tdH*mix(.55,1.1,tdRock)*(1.-smoothGround*.7); }`)
+        diffuseColor.rgb*=1.+tdH*mix(.55,1.1,tdRock)*(1.-smoothGround*.7);
+        float hf=length(vObj)-1., wet=(1.-smoothstep(uSea,uSea+.003,hf))*smoothstep(uSea-.003,uSea,hf);
+        diffuseColor.rgb*=1.-.32*wet; }   // wet ground in a band at the waterline`)
     .replace('#include <normal_fragment_begin>',`#include <normal_fragment_begin>
       { vec3 sp=-vViewPosition, sx=dFdx(sp), sy=dFdy(sp), r1=cross(sy,normal), r2=cross(normal,sx);
         float det=dot(sx,r1), h=tdH*mix(.0012,.0035,tdRock);
@@ -309,41 +313,57 @@ function icosphere(detail){
   return mergeVertices(g);
 }
 
-/* water: a standard PBR sphere with waves added in its shaders. Eight travelling sine waves, fixed to the planet's
-   surface, perturb the normal (rolling highlights and a glittering sun path) and lift the surface slightly, so the
-   shoreline laps. A flat sky-blue environment gives the reflection at grazing angles. */
-const WAVES=[ // direction seed, frequency, amplitude, speed
-  [1,32,.0016,.9],[2,47,.0011,-1.1],[3,71,.0007,1.3],[4,96,.0005,-1.6],
-  [5,140,.00034,2.0],[6,190,.00024,-2.4],[7,260,.00016,2.9],[8,350,.00011,-3.3]];
+/* water: drawn on the terrain's own chunk meshes. The vertex shader moves each terrain vertex out to the sea
+   surface, so the water knows the depth of the ground under every point: shallows are clear and turquoise, the
+   sea fades to nothing exactly at the waterline (the same triangles cross sea level there), surf lines roll in
+   toward the shore, and a slow noise swell makes shorelines lap. Ripples are drifting noise rather than global
+   waves, so there are no stripes across the planet; ripple layers too fine for a pixel fade out. */
+const NOISE_GLSL=`
+  float hash3(vec3 p){ p=fract(p*.3183099+.1); p*=17.; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
+  float vnoise(vec3 x){ vec3 i=floor(x),f=fract(x); f=f*f*(3.-2.*f);
+    return mix(mix(mix(hash3(i),hash3(i+vec3(1,0,0)),f.x),mix(hash3(i+vec3(0,1,0)),hash3(i+vec3(1,1,0)),f.x),f.y),
+               mix(mix(hash3(i+vec3(0,0,1)),hash3(i+vec3(1,0,1)),f.x),mix(hash3(i+vec3(0,1,1)),hash3(i+vec3(1,1,1)),f.x),f.y),f.z); }`;
 const waterEnv=(()=>{const sc=new THREE.Scene();sc.background=new THREE.Color(0x7aa3d8);
   const pm=new THREE.PMREMGenerator(renderer),t=pm.fromScene(sc,0).texture;pm.dispose();return t;})();
-const waterU={uTime:{value:0},uWave:{value:1},uSwell:{value:1},uNM:{value:new THREE.Matrix3()}};
-const waterMat=new THREE.MeshStandardMaterial({color:0x2b7fbf,roughness:.1,metalness:0,transparent:true,opacity:.8,envMap:waterEnv,envMapIntensity:.55});
+const waterU={uTime:{value:0},uWave:{value:1},uSwell:{value:1},uSea:seaU,uFoam:{value:1},uShallow:{value:new THREE.Color(0x3fc4bd)}};
+const waterMat=new THREE.MeshStandardMaterial({color:0x2b7fbf,roughness:.12,metalness:0,transparent:true,envMap:waterEnv,envMapIntensity:.55});
 waterMat.onBeforeCompile=sh=>{
   Object.assign(sh.uniforms,waterU);
-  const r=mulberry32(31337);
-  const dirs=WAVES.map(()=>{const u=r()*2-1,a=r()*6.283,q=Math.sqrt(1-u*u);return`vec3(${(Math.cos(a)*q).toFixed(4)},${u.toFixed(4)},${(Math.sin(a)*q).toFixed(4)})`;});
-  const f=v=>v.toFixed(5);
-  const fn=`uniform float uTime; uniform float uWave; uniform float uSwell; varying vec3 vObj;
-    const vec3 WD[8]=vec3[8](${dirs.join(',')});
-    const float WF[8]=float[8](${WAVES.map(w=>f(w[1])).join(',')});
-    const float WA[8]=float[8](${WAVES.map(w=>f(w[2])).join(',')});
-    const float WS[8]=float[8](${WAVES.map(w=>f(w[3])).join(',')});
-    // fw = surface distance per pixel: waves too fine to resolve fade out instead of aliasing into sparkle grids
-    vec4 waves(vec3 p,float fw){ vec3 g=vec3(0.); float h=0.;
-      for(int k=0;k<8;k++){ float ph=dot(WD[k],p)*WF[k]+uTime*WS[k], fade=1.-smoothstep(.35,1.4,WF[k]*fw);
-        h+=WA[k]*sin(ph); g+=WA[k]*WF[k]*cos(ph)*WD[k]*fade; }
-      return vec4(g,h); }`;
-  sh.vertexShader=sh.vertexShader.replace('#include <common>','#include <common>\n'+fn)
-    .replace('#include <begin_vertex>','#include <begin_vertex>\n vObj=position; transformed+=normal*waves(position,0.).w*uSwell;');
-  sh.fragmentShader=sh.fragmentShader.replace('#include <common>','#include <common>\nuniform mat3 uNM;\n'+fn)
+  const head=`uniform float uTime; uniform float uWave; uniform float uSwell; uniform float uSea; uniform float uFoam; uniform vec3 uShallow;
+    varying vec3 vObj; varying float vDepth;`+NOISE_GLSL;
+  sh.vertexShader=sh.vertexShader.replace('#include <common>','#include <common>\n'+head+`
+      float swellAt(vec3 d){ return ((vnoise(d*26.+vec3(uTime*.18,0.,uTime*.11))-.5)*.0026
+                                    +(vnoise(d*61.-vec3(0.,uTime*.27,uTime*.2))-.5)*.0012)*uSwell; }`)
+    .replace('#include <beginnormal_vertex>','vec3 objectNormal=normalize(position);')
+    .replace('#include <begin_vertex>',`vec3 dir0=normalize(position); float sw=swellAt(dir0);
+      vec3 transformed=dir0*(1.+uSea+sw); vObj=dir0; vDepth=uSea+sw-(length(position)-1.);`);
+  sh.fragmentShader=sh.fragmentShader.replace('#include <common>','#include <common>\n'+head+'\nfloat wFoam;')
+    .replace('#include <color_fragment>',`#include <color_fragment>
+      { float dpt=vDepth; if(dpt<=0.) discard;
+        diffuseColor.rgb=mix(uShallow,diffuseColor.rgb,smoothstep(.0005,.014,dpt));
+        diffuseColor.a=mix(.3,.88,smoothstep(0.,.016,dpt))*smoothstep(0.,.0012,dpt);
+        // surf: bands parallel to the shore rolling in, broken up by noise; plus a thin lip at the waterline
+        float fd=fwidth(dpt)*1400., fade=1.-smoothstep(.5,1.5,fd);
+        float band=.5+.5*sin(dpt*1400.+uTime*2.2), brk=vnoise(vObj*240.+uTime*.15);
+        float surf=(1.-smoothstep(.0003,.004,dpt))*smoothstep(.6,1.,band*.65+brk*.55)*fade;
+        float lip=1.-smoothstep(0.,max(.0009,fwidth(dpt)*1.5),dpt);
+        wFoam=clamp(max(surf,lip*.85)*uFoam,0.,1.);
+        diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.93,.97,1.),wFoam);
+        diffuseColor.a=max(diffuseColor.a,wFoam*.92); }`)
+    .replace('#include <roughnessmap_fragment>','#include <roughnessmap_fragment>\nroughnessFactor=mix(roughnessFactor,.85,wFoam);')
     .replace('#include <normal_fragment_begin>',`#include <normal_fragment_begin>
-      { vec3 g=uNM*waves(vObj,length(fwidth(vObj))).xyz; normal=normalize(normal-(g-normal*dot(g,normal))*uWave); }`);
+      { float fw=length(fwidth(vObj)), h=0., a=1., f=55.;
+        for(int k=0;k<4;k++){ float w=1.-smoothstep(.3,1.,f*fw); if(w<=0.) break;
+          vec3 drift=vec3(sin(float(k)*2.1),cos(float(k)*1.3),sin(float(k)*.7+1.))*uTime*(.05+.035*float(k));
+          h+=a*w*(vnoise(vObj*f+drift)-.5); a*=.5; f*=2.2; }
+        h*=.0011*uWave*(1.-wFoam);
+        vec3 sp=-vViewPosition, sx=dFdx(sp), sy=dFdy(sp), r1=cross(sy,normal), r2=cross(normal,sx);
+        float det=dot(sx,r1); vec3 grad=sign(det)*(dFdx(h)*r1+dFdy(h)*r2);
+        normal=normalize(abs(det)*normal-grad); }`);
 };
-const water=new THREE.Mesh(new THREE.SphereGeometry(1,256,160),waterMat);
-const _wmv=new THREE.Matrix4();
-water.onBeforeRender=(r,s,cam)=>{_wmv.multiplyMatrices(cam.matrixWorldInverse,water.matrixWorld);waterU.uNM.value.getNormalMatrix(_wmv);};
-water.renderOrder=1; spin.add(water);
+// one water mesh per chunk, sharing the chunk's geometry (only drawn where the chunk dips near or below the sea)
+for(const ch of chunks){const w=new THREE.Mesh(ch.geo,waterMat);w.frustumCulled=false;w.visible=false;w.renderOrder=1;spin.add(w);ch.water=w;}
+
 
 const fogShell=new THREE.Mesh(new THREE.SphereGeometry(1.032,96,72),
   new THREE.MeshStandardMaterial({color:0xe6ebf2,roughness:1,transparent:true,opacity:0,depthWrite:false}));
@@ -363,7 +383,7 @@ function generate(s){
     else{
       // mountains only inland, and only inside broad "range" regions
       const m=ridged(n3,px*1.9,py*1.9,pz*1.9,4), mask=smooth(.06,.3,c)*smooth(-.05,.3,n3(px*.8+9,py*.8,pz*.8));
-      h=.004+c*.05+mask*m*m*.12;
+      h=.004*smooth(0,.035,c)+c*.05+mask*m*m*.12;   // ramps up from the shore: no step at sea level
     }
     base[i]=heights[i]=h+fbm(n4,x*14,y*14,z*14,2)*.0015;
     vary[i]=n4(x*6,y*6,z*6);
@@ -496,7 +516,8 @@ function cullChunks(){
     if(fn&&(now-ch.wanted[L]>8000||fn.ver!==ch.version&&!ch.queued[L]))disposeFine(ch,L);}}
   for(const ch of chunks){
     ch.mesh.visible=ch.vis&&!ch.shown;   // hidden base meshes still take the brush's raycasts
-    for(let L=1;L<=LOD_MAX;L++){const fn=ch.fine[L];if(fn)fn.mesh.visible=ch.vis&&ch.shown===L;}
+    ch.water.visible=ch.mesh.visible&&ch.wet;
+    for(let L=1;L<=LOD_MAX;L++){const fn=ch.fine[L];if(fn){fn.mesh.visible=ch.vis&&ch.shown===L;fn.water.visible=fn.mesh.visible&&ch.wet;}}
   }
   drawnCount=drawnMeshes.length;
 }
@@ -511,11 +532,12 @@ const LOD_MAX=2, LOD_BUDGET=[0,40,10];  // most chunks held at level ≥1 / at l
 let detailNoise=null;
 function chunkInterest(ch){
   // mountains, rough land and coastline earn detail; open sea and flat plains don't (seabed slopes don't count)
-  let mx=-1,coast=0,sl=0,land=0; const V=ch.verts;
-  for(let k=0;k<V.length;k++){const v=V[k],h=heights[v];if(h>mx)mx=h;if(Math.abs(h)<.005)coast++;
+  let mx=-1,mn=1,coast=0,sl=0,land=0; const V=ch.verts;
+  for(let k=0;k<V.length;k++){const v=V[k],h=heights[v];if(h>mx)mx=h;if(h<mn)mn=h;if(Math.abs(h)<.005)coast++;
     if(h>0){land++;sl+=1-(nrm[v*3]*dirs[v*3]+nrm[v*3+1]*dirs[v*3+1]+nrm[v*3+2]*dirs[v*3+2]);}}
   const n=V.length,s=land?sl/land:0,c=coast/n;
   ch.stats=[mx,s,c];
+  ch.wet=mn<.03; // low enough for the sea to reach, even in a storm
   ch.interest=(mx>.06||s>.25||c>.12)?2:(mx>.015||s>.1||c>.03)?1:0;   // slope here is 1−cos of the tilt
 }
 function* buildFine(ch,L){
@@ -583,7 +605,8 @@ function* buildFine(ch,L){
   g.setAttribute('color',new THREE.BufferAttribute(col,3));g.setIndex(new THREE.BufferAttribute(idx,1));
   g.computeBoundingSphere();
   const mesh=new THREE.Mesh(g,terrainMat); mesh.frustumCulled=false; mesh.visible=false; spin.add(mesh);
-  disposeFine(ch,L); fine.mesh=mesh; fine.geo=g; ch.fine[L]=fine;
+  const wm=new THREE.Mesh(g,waterMat); wm.frustumCulled=false; wm.visible=false; wm.renderOrder=1; spin.add(wm);
+  disposeFine(ch,L); fine.mesh=mesh; fine.water=wm; fine.geo=g; ch.fine[L]=fine;
 }
 function shadeFine(fine,pos,nor,col){
   for(let k=0;k<fine.nv;k++){
@@ -592,7 +615,7 @@ function shadeFine(fine,pos,nor,col){
     col[o]=tmpC.r;col[o+1]=tmpC.g;col[o+2]=tmpC.b;
   }
 }
-function disposeFine(ch,L){const fn=ch.fine[L];if(fn&&fn.mesh){spin.remove(fn.mesh);fn.geo.dispose();}ch.fine[L]=null;}
+function disposeFine(ch,L){const fn=ch.fine[L];if(fn&&fn.mesh){spin.remove(fn.mesh);spin.remove(fn.water);fn.geo.dispose();}ch.fine[L]=null;}
 function dropAllFine(){for(const ch of chunks){for(let L=1;L<=LOD_MAX;L++)disposeFine(ch,L);ch.queued.fill(false);}jobs.length=0;}
 const jobs=[];
 function pumpJobs(ms){
@@ -885,7 +908,7 @@ function updateWeather(dt){
   // It rises over several seconds and drains away more slowly afterwards.
   const seaTarget=.0045*clamp(W.rain,0,1)+.009*clamp(W.rain-1,0,1.5);
   seaLevel+=(seaTarget-seaLevel)*Math.min(1,dt*(seaTarget>seaLevel?.14:.045));
-  water.scale.setScalar(1+seaLevel); fogShell.scale.setScalar(1+seaLevel);
+  seaU.value=seaLevel; fogShell.scale.setScalar(1+seaLevel);
   // lighting and clouds, with lightning flashes
   if(W.storm>.5){nextBolt-=dt;if(nextBolt<=0){strike();nextBolt=Math.random()<.3?.15:1.2+Math.random()*3.5;}}
   if(boltLife>0){boltLife-=dt;bolt.material.opacity=clamp(boltLife/.18,0,1);if(boltLife<=0)bolt.visible=false;}
@@ -1180,7 +1203,7 @@ function updateFling(dt){
 }
 function frame(t){
   timer.update(t); const dt=Math.min(timer.getDelta(),.05); time+=dt;
-  if(!editing) spin.rotation.y+=dt*.035;
+  if(!editing&&!window.__tw?.spinOff) spin.rotation.y+=dt*.035;
   if(sculpting) sculptStep(dt);
   brushRing.visible=editing&&(haveHover||sculpting);
   if(brushRing.visible)placeRing();
