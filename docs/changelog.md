@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-01: Real flinging
+
+- **Spinning moves the world, not the camera.** Drag spins the planet around the axis perpendicular to the drag, in any direction and over the poles. Day and night sweep across it as it turns.
+  - Spinning is about twice as fast as before.
+  - A hard swipe keeps gliding for several seconds.
+  - Touching the planet catches it.
+- **Squash and stretch** now uses the planet's actual spin axis, held steady as the spin dies down.
+- **Fling effects only trigger on a real fling:** squash above 7 rad/s, clouds above 6 rad/s. Slow or careful drags no longer jiggle anything.
+- Pinch and mouse-wheel zoom are handled directly, with easing.
+
 ## 2026-11-01: Chunked smooth world, soft clouds, fling
 
 - **4× more detail again:** 655,362 vertices (256 segments per icosahedron edge), with smooth shading instead of flat facets.

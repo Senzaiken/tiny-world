@@ -103,11 +103,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 
 <script type="module">
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { computeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
-const BUILD='20261101150112';
+const BUILD='20261101151200';
 const SAVE_KEY='tinyworld-save-v1'; // the key stays the same; the save itself carries a format version
 const $=id=>document.getElementById(id);
 const clamp=(x,a,b)=>x<a?a:x>b?b:x;
@@ -170,9 +169,11 @@ const hemi=new THREE.HemisphereLight(0xc4dcff,0x1c2230,0.5); scene.add(hemi);
 }
 
 /* planet hierarchy: tilt -> spin -> terrain/water/fog */
-// squash -> tilt -> spin: the outer group carries the cartoon squash-and-stretch when the planet is flung
+// squash -> globe -> tilt -> spin. `globe` is what the player spins (clouds and rain ride along with it);
+// `squash` sits outside it so the cartoon squash-and-stretch stays lined up with the spin axis in view space.
 const squash=new THREE.Group(); squash.matrixAutoUpdate=false; scene.add(squash);
-const tilt=new THREE.Group(); tilt.rotation.z=0.38; squash.add(tilt);
+const globe=new THREE.Group(); squash.add(globe);
+const tilt=new THREE.Group(); tilt.rotation.z=0.38; globe.add(tilt);
 const spin=new THREE.Group(); tilt.add(spin);
 
 /* ---------- terrain: a chunked icosphere ---------- */
@@ -504,7 +505,7 @@ cloudGeo.setAttribute('aShade',new THREE.InstancedBufferAttribute(aShade,1));
 const alphaAttr=new THREE.InstancedBufferAttribute(aAlpha,1).setUsage(THREE.DynamicDrawUsage);
 cloudGeo.setAttribute('aAlpha',alphaAttr);
 const cloudMesh=new THREE.InstancedMesh(cloudGeo,cloudMat,NW);
-cloudMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); cloudMesh.frustumCulled=false; cloudMesh.renderOrder=4; scene.add(cloudMesh);
+cloudMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); cloudMesh.frustumCulled=false; cloudMesh.renderOrder=4; globe.add(cloudMesh);
 const clouds=[];
 {
   const r=mulberry32(4242),gauss=()=>(r()+r()+r()-1.5)/1.5;
@@ -564,7 +565,7 @@ const cirrus=(()=>{
   const t=new THREE.CanvasTexture(c);
   const m=new THREE.Mesh(new THREE.SphereGeometry(1.255,96,64),
     new THREE.MeshStandardMaterial({color:0xffffff,alphaMap:t,transparent:true,opacity:.5,depthWrite:false,roughness:1,blending:THREE.AdditiveBlending}));
-  m.renderOrder=3; scene.add(m); return m;
+  m.renderOrder=3; globe.add(m); return m;
 })();
 
 /* ---------- precipitation ---------- */
@@ -572,14 +573,14 @@ const RAIN_MAX=2600, SNOW_MAX=1600;
 const rainPos=new Float32Array(RAIN_MAX*6);
 const rainGeo=new THREE.BufferGeometry(); rainGeo.setAttribute('position',new THREE.BufferAttribute(rainPos,3).setUsage(THREE.DynamicDrawUsage));
 const rain=new THREE.LineSegments(rainGeo,new THREE.LineBasicMaterial({color:0xa9bddc,transparent:true,opacity:.45,depthWrite:false}));
-rain.frustumCulled=false; scene.add(rain);
+rain.frustumCulled=false; globe.add(rain);
 const snowPos=new Float32Array(SNOW_MAX*3);
 const snowGeo=new THREE.BufferGeometry(); snowGeo.setAttribute('position',new THREE.BufferAttribute(snowPos,3).setUsage(THREE.DynamicDrawUsage));
 const flake=(()=>{const c=document.createElement('canvas');c.width=c.height=32;const x=c.getContext('2d'),g=x.createRadialGradient(16,16,0,16,16,16);
   g.addColorStop(0,'rgba(255,255,255,1)');g.addColorStop(.5,'rgba(255,255,255,.7)');g.addColorStop(1,'rgba(255,255,255,0)');x.fillStyle=g;x.fillRect(0,0,32,32);
   const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t;})();
 const snow=new THREE.Points(snowGeo,new THREE.PointsMaterial({size:.018,map:flake,transparent:true,depthWrite:false,color:0xffffff}));
-snow.frustumCulled=false; scene.add(snow);
+snow.frustumCulled=false; globe.add(snow);
 function makeDrops(n){return{c:new Array(n).fill(null),u:new Float32Array(n),v:new Float32Array(n),t:new Float32Array(n).map(()=>Math.random()),ph:new Float32Array(n).map(()=>Math.random()*6)};}
 const rd=makeDrops(RAIN_MAX), sd=makeDrops(SNOW_MAX);
 function respawn(D,i){
@@ -623,7 +624,7 @@ function updatePrecip(dt,time){
 /* ---------- lightning ---------- */
 const boltGeo=new THREE.BufferGeometry(); boltGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(14*3),3));
 const bolt=new THREE.Line(boltGeo,new THREE.LineBasicMaterial({color:0xeef4ff,transparent:true,opacity:1,depthWrite:false}));
-bolt.visible=false; bolt.frustumCulled=false; scene.add(bolt);
+bolt.visible=false; bolt.frustumCulled=false; globe.add(bolt);
 let nextBolt=2, flash=0, boltLife=0;
 function strike(){
   if(!live.length)return;
@@ -677,7 +678,7 @@ function updateWeather(dt){
   cirrus.material.opacity=W.cirrus*(1-W.fog*.5);
 }
 
-/* ---------- camera & controls (sculpt listener registered first so it can claim the gesture) ---------- */
+/* ---------- picking ---------- */
 const raycaster=new THREE.Raycaster(), ndc=new THREE.Vector2(); raycaster.firstHitOnly=true;
 let editing=false, sculpting=false, sculptId=null, pointers=0, haveHover=false;
 const hitDir=new THREE.Vector3(), hitLocal=new THREE.Vector3(); let lastPointer=null;
@@ -690,31 +691,80 @@ function pick(e){
   hitLocal.copy(h.point); spin.worldToLocal(hitLocal); hitDir.copy(hitLocal).normalize();
   return true;
 }
+/* ---------- globe controls ----------
+   One finger spins the world itself around the axis perpendicular to the drag (any axis, over the poles too).
+   Letting go keeps it spinning at the release speed, slowing gently; touching it again catches it.
+   Two fingers pinch to zoom; the mouse wheel zooms. In Sculpt mode a touch that lands on the planet sculpts. */
+const CAM_DIR=new THREE.Vector3(0,.35,1).normalize(), MIN_DIST=1.55, MAX_DIST=14, FRICTION=.42, MAX_SPIN=30;
+let camDist=4, camDistT=4, homeDist=4, dragId=null, lastMoveT=0, pinchD=0;
+const omega=new THREE.Vector3(), dragV=new THREE.Vector3();  // spin velocity (rad/s, view-space axis × rate)
+const ptrs=new Map();
+const _ax=new THREE.Vector3(),_dq=new THREE.Quaternion(),_camR=new THREE.Vector3(),_camU=new THREE.Vector3(),_iv=new THREE.Vector3();
+function rotateBy(dx,dy){
+  const k=4.4/Math.min(innerWidth,innerHeight)*clamp(camDist/homeDist,.35,1.5);   // radians per pixel
+  _camR.setFromMatrixColumn(camera.matrixWorld,0); _camU.setFromMatrixColumn(camera.matrixWorld,1);
+  _ax.copy(_camR).multiplyScalar(dy).addScaledVector(_camU,dx);
+  const len=_ax.length(); if(len<1e-6)return 0;
+  _ax.multiplyScalar(1/len); _dq.setFromAxisAngle(_ax,len*k);
+  globe.quaternion.premultiply(_dq).normalize();
+  return len*k;
+}
 canvas.addEventListener('pointerdown',e=>{
-  pointers++;
-  if(sculpting&&pointers>1){endStroke();return;}
-  if(!editing||pointers>1)return;
-  if(pick(e)){ lastPointer={clientX:e.clientX,clientY:e.clientY}; sculpting=true; sculptId=e.pointerId; controls.enabled=false; beginStroke(); }
+  try{canvas.setPointerCapture(e.pointerId);}catch(_){}
+  ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(ptrs.size>=2){
+    if(sculpting){endStroke();lastPointer=null;}
+    dragId=null; const [a,b]=[...ptrs.values()]; pinchD=Math.hypot(a.x-b.x,a.y-b.y); return;
+  }
+  if(editing&&pick(e)){ lastPointer={clientX:e.clientX,clientY:e.clientY}; sculpting=true; sculptId=e.pointerId; omega.set(0,0,0); beginStroke(); return; }
+  dragId=e.pointerId; omega.set(0,0,0); dragV.set(0,0,0); lastMoveT=performance.now();  // catching it stops the spin
 });
 canvas.addEventListener('pointermove',e=>{
+  const p=ptrs.get(e.pointerId);
+  if(p){
+    const dx=e.clientX-p.x, dy=e.clientY-p.y; p.x=e.clientX; p.y=e.clientY;
+    if(ptrs.size===2){
+      const [a,b]=[...ptrs.values()],d=Math.hypot(a.x-b.x,a.y-b.y);
+      if(pinchD>0&&d>0)camDistT=clamp(camDistT*pinchD/d,MIN_DIST,MAX_DIST); pinchD=d;
+    } else if(e.pointerId===dragId){
+      const now=performance.now(),secs=Math.max(4,now-lastMoveT)/1000; lastMoveT=now;
+      const ang=rotateBy(dx,dy);
+      if(ang)dragV.lerp(_iv.copy(_ax).multiplyScalar(ang/secs),.3);
+    }
+  }
   if(!editing)return;
   if(sculpting&&e.pointerId!==sculptId)return;
   if(sculpting)lastPointer={clientX:e.clientX,clientY:e.clientY};
-  haveHover=pick(e);
+  if(dragId===null&&ptrs.size<2)haveHover=pick(e);
 });
-const up=e=>{pointers=Math.max(0,pointers-1);if(sculpting&&e.pointerId===sculptId){endStroke();lastPointer=null;}if(e.pointerType!=='mouse')haveHover=false;};
+const up=e=>{
+  if(e.pointerId===dragId){
+    dragId=null;
+    if(performance.now()-lastMoveT<90){omega.copy(dragV);if(omega.length()>MAX_SPIN)omega.setLength(MAX_SPIN);} // fling
+  }
+  if(sculpting&&e.pointerId===sculptId){endStroke();lastPointer=null;}
+  ptrs.delete(e.pointerId); if(ptrs.size<2)pinchD=0;
+  if(e.pointerType!=='mouse')haveHover=false;
+};
 canvas.addEventListener('pointerup',up); canvas.addEventListener('pointercancel',up);
 canvas.addEventListener('pointerleave',e=>{if(e.pointerType==='mouse'&&!sculpting)haveHover=false;});
-
-const controls=new OrbitControls(camera,canvas);
-controls.enableDamping=true; controls.dampingFactor=.08; controls.enablePan=false;
-controls.rotateSpeed=.55; controls.zoomSpeed=.8; controls.minDistance=1.55; controls.maxDistance=14;
+canvas.addEventListener('wheel',e=>{e.preventDefault();camDistT=clamp(camDistT*Math.exp(e.deltaY*.0012),MIN_DIST,MAX_DIST);},{passive:false});
+function updateGlobe(dt){
+  const w=omega.length();
+  if(dragId===null&&w>0){
+    _dq.setFromAxisAngle(_ax.copy(omega).multiplyScalar(1/w),w*dt); globe.quaternion.premultiply(_dq).normalize();
+    // gentle proportional drag plus a little constant drag, so a hard fling glides for a few seconds and slow spins settle
+    const nw=w*Math.exp(-FRICTION*dt)-.12*dt; if(nw<=.01)omega.set(0,0,0); else omega.multiplyScalar(nw/w);
+  }
+  if(dragId!==null&&performance.now()-lastMoveT>50)dragV.multiplyScalar(Math.exp(-14*dt)); // finger held still
+  camDist+=(camDistT-camDist)*(1-Math.exp(-dt*10));
+  camera.position.copy(CAM_DIR).multiplyScalar(camDist); camera.lookAt(0,0,0);
+}
 
 function fitCamera(){
   const a=innerWidth/innerHeight, half=THREE.MathUtils.degToRad(camera.fov/2);
   const d=1.32/(Math.tan(half)*Math.min(1,a));
-  camera.position.set(0,.35,1).normalize().multiplyScalar(d);
-  controls.target.set(0,0,0); controls.update();
+  homeDist=camDist=camDistT=d; camera.position.copy(CAM_DIR).multiplyScalar(d); camera.lookAt(0,0,0);
 }
 
 /* ---------- sculpting ---------- */
@@ -726,7 +776,7 @@ const touched=new Uint32Array(N), seenV=new Uint32Array(N), umark=new Uint32Arra
 const undoStack=[]; let sculpted=false, strokeUndo=null;
 function beginStroke(){ ustamp++; strokeUndo={idx:[],h:[]}; flatH=Math.max(hitLocal.length()-1,.002); }
 function endStroke(){
-  sculpting=false; sculptId=null; controls.enabled=true;
+  sculpting=false; sculptId=null;
   if(strokeUndo&&strokeUndo.idx.length){
     undoStack.push({idx:Uint32Array.from(strokeUndo.idx),h:Float32Array.from(strokeUndo.h)});
     if(undoStack.length>30)undoStack.shift();
@@ -885,23 +935,17 @@ async function boot(){
   setTimeout(checkForUpdate,3000);
   renderer.setAnimationLoop(frame);
 }
-/* ---------- fling: a fast swipe squashes the planet and throws the clouds outward, then it all wobbles back ---------- */
-// The camera orbits the planet, so the spin rate is how fast the camera's direction turns. Two damped springs chase
-// targets set by that rate: one squashes the planet along the spin axis (bulging the equator), one lifts the clouds.
-const fling={prev:new THREE.Vector3(),axis:new THREE.Vector3(0,1,0),squash:0,sv:0,cloud:0,cv:0,ready:false};
-const _fv=new THREE.Vector3(),_fa=new THREE.Vector3();
+/* ---------- fling: a fast spin squashes the planet and throws the clouds outward, then it all wobbles back ---------- */
+// Two damped springs chase targets set by the spin rate: one flattens the planet along its spin axis (bulging the
+// equator around it), one lifts the clouds. The axis is the globe's actual spin axis, held while the spin dies down.
+const fling={axis:new THREE.Vector3(0,1,0),rate:0,squash:0,sv:0,cloud:0,cv:0};
+const _fa=new THREE.Vector3();
 function updateFling(dt){
-  _fv.copy(camera.position).normalize();
-  let w=0;
-  if(fling.ready){
-    const ang=fling.prev.angleTo(_fv);
-    if(ang<.8){ // ignore camera jumps
-      w=ang/Math.max(dt,1e-3);
-      if(w>.3){_fa.crossVectors(fling.prev,_fv).normalize();if(_fa.dot(fling.axis)<0)_fa.negate();fling.axis.lerp(_fa,.25).normalize();}
-    }
-  }
-  fling.prev.copy(_fv); fling.ready=true;
-  const st=clamp((w-1.2)*.035,0,.1), ct=clamp((w-.9)*.045,0,.14);
+  const v=dragId!==null?dragV:omega, w=v.length();
+  fling.rate=w;
+  if(w>.2){_fa.copy(v).multiplyScalar(1/w);if(_fa.dot(fling.axis)<0)_fa.negate();fling.axis.lerp(_fa,1-Math.exp(-dt*14)).normalize();}
+  // Only a real fling counts: a slow drag spins at up to ~4 rad/s, a hard swipe at 15-30 rad/s.
+  const st=clamp((w-7)*.0133,0,.12), ct=clamp((w-6)*.016,0,.16);
   fling.sv+=(-(fling.squash-st)*170-fling.sv*9)*dt; fling.squash+=fling.sv*dt;   // stiff and bouncy
   fling.cv+=(-(fling.cloud-ct)*45-fling.cv*4.5)*dt; fling.cloud+=fling.cv*dt;     // softer and slower
   // M = sp·I + (sa−sp)·a·aᵀ: shrink along the spin axis, bulge around it, keeping the volume about the same
@@ -919,15 +963,14 @@ function frame(t){
   if(sculpting) sculptStep(dt);
   brushRing.visible=editing&&(haveHover||sculpting);
   if(brushRing.visible)placeRing();
-  updateFling(dt); updateWeather(dt); updateClouds(dt,time); updatePrecip(dt,time);
-  controls.update();
-  camera.updateMatrixWorld(); tilt.updateMatrixWorld(true); cullChunks();
+  updateGlobe(dt); updateFling(dt); updateWeather(dt); updateClouds(dt,time); updatePrecip(dt,time);
+  camera.updateMatrixWorld(); squash.updateMatrixWorld(true); cullChunks();
   if((statT-=dt)<=0){statT=.5;$('chunkTxt').textContent=`${drawnCount}/${NC} chunks drawn`;}
   renderer.render(scene,camera);
 }
 requestAnimationFrame(()=>setTimeout(boot,30)); // let the loading screen paint first
 window.__tw={setWeather,heights,N,NC,get drawn(){return drawnCount;},get W(){return W;},
-  cloudU:cloudMat.uniforms,fling,ff:sec=>{for(let t=0;t<sec;t+=.05){time+=.05;updateWeather(.05);updateClouds(.05,time);}},view:(d,a)=>{controls.enableDamping=false;camera.position.set(Math.cos(a)*d,.3*d,Math.sin(a)*d);controls.update();},sculptAt:(x,y,z,t)=>{hitDir.set(x,y,z).normalize();hitLocal.copy(hitDir);tool=t||'raise';beginStroke();for(let i=0;i<30;i++)sculptStep(.05);endStroke();},undo};
+  cloudU:cloudMat.uniforms,fling,ff:sec=>{for(let t=0;t<sec;t+=.05){time+=.05;updateWeather(.05);updateClouds(.05,time);}},view:(d,a)=>{camDist=camDistT=d;globe.quaternion.setFromAxisAngle(UP,a);},flick:(x,y,z)=>omega.set(x,y,z),globeQ:()=>globe.quaternion.toArray().map(v=>v.toFixed(4)).join(),sculptAt:(x,y,z,t)=>{hitDir.set(x,y,z).normalize();hitLocal.copy(hitDir);tool=t||'raise';beginStroke();for(let i=0;i<30;i++)sculptStep(.05);endStroke();},undo};
 </script>
 </body>
 </html>

@@ -9,7 +9,7 @@ The brush finds the ground with a raycast against the chunks being drawn, each t
 ## Gestures
 
 - **Drag on the planet** to sculpt.
-- **Drag on empty space** to spin the planet.
+- **Drag on empty space** to spin the planet. A fast swipe flings it, and touching it catches it.
 - **Pinch** to zoom.
 - If a second finger lands during a stroke, the stroke ends.
 - With a mouse, a ring shows where the brush will land.

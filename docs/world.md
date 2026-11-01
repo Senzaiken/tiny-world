@@ -55,14 +55,19 @@ A single front-facing shell at radius 1.24 with a custom shader. For each pixel 
 - The planet is tilted 0.38 rad and spins slowly (0.035 rad/s). Spinning pauses in Sculpt mode.
 - One warm directional sun plus a hemisphere fill light.
 - 1,800 background stars.
-- Orbit controls: drag to spin, pinch to zoom (1.55 to 14), no panning. The starting distance is fitted to the screen's narrow side.
+- The camera stays put. Dragging spins the world itself (`globe`, which holds the planet, clouds, rain and lightning) around the axis perpendicular to the drag. That works on any axis, over the poles too. The sun and atmosphere stay fixed, so spinning sweeps day and night across the planet.
+  - Speed is 4.4 rad per screen width, scaled down when zoomed in.
+  - Letting go keeps the spin at the release speed: the rate is smoothed over the last few moves, and holding still before letting go means no spin. It then slows by 42%/s proportional plus 0.12 rad/s² constant drag, capped at 30 rad/s. A hard swipe glides for several seconds.
+  - Touching the planet again catches it.
+- Pinch or the mouse wheel zooms (distance 1.55 to 14, eased). The starting distance is fitted to the screen's narrow side.
 - A loading screen shows while the world is generated (about a second on a phone).
 
 ## Fling
 
 Swiping fast makes the planet squash and stretch like a cartoon, and throws the clouds outward. Both spring back with a wobble.
 
-- The spin rate is how fast the camera's direction turns around the planet. The spin axis is the axis of that turn, smoothed.
-- **Squash spring** (stiffness 170, damping 9): it starts above 1.2 rad/s and reaches 0.1 at about 4 rad/s. The planet shrinks by that fraction along the spin axis and bulges around it, keeping its volume. This is applied as a matrix on the `squash` group that holds the planet.
-- **Cloud spring** (stiffness 45, damping 4.5): it starts above 0.9 rad/s and reaches 0.14. Clouds rise by that fraction of their altitude, and their wisps grow by 80% of it. Rain and snow follow the clouds.
+- The spin rate and axis come from the globe's own angular velocity: the drag rate while a finger is down, the glide afterwards. The axis follows quickly and holds while the spin dies down.
+- Slow and medium spins do nothing. A careful drag peaks at about 4 rad/s, while a real swipe is 15 to 30.
+- **Squash spring** (stiffness 170, damping 9): it starts above 7 rad/s and reaches 0.12 at about 16 rad/s. The planet shrinks by that fraction along the spin axis and bulges around it, keeping its volume. This is a matrix on the `squash` group, which sits outside the spinning globe so the bulge stays aligned with the axis while the planet turns inside it.
+- **Cloud spring** (stiffness 45, damping 4.5): it starts above 6 rad/s and reaches 0.16. Clouds rise by that fraction of their altitude, and their wisps grow by 80% of it. Rain and snow follow the clouds.
 - The atmosphere glow isn't squashed.
