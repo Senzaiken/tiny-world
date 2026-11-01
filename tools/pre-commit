@@ -1,0 +1,10 @@
+#!/bin/sh
+# Stamps a new build id into index.html and version.json on every commit that
+# touches the game, so players' open copies can detect the update and reload.
+# Install once per clone:  cp tools/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+if git diff --cached --name-only | grep -qE '^(index\.html|icons/|manifest\.webmanifest)'; then
+  BUILD=$(date -u +%Y%m%d%H%M%S)
+  sed -i.bak -E "s/const BUILD='[0-9]*';/const BUILD='$BUILD';/" index.html && rm -f index.html.bak
+  printf '{"build":"%s"}\n' "$BUILD" > version.json
+  git add index.html version.json
+fi
