@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-01: Higher-resolution planet
+
+- The planet mesh is 4× finer: `DETAIL` went from 63 to 127, which means 163,842 vertices. Coastlines, ridges and sculpting are much smoother.
+- Sculpting stays fast at the new size:
+  - Picking uses a bounding-volume tree (three-mesh-bvh).
+  - Normals and colours update only around the brush.
+  - Weather recolouring is spread across frames.
+- Existing sculpted worlds are upsampled onto the new mesh when they load, so nothing is lost.
+- Undo now keeps 15 strokes instead of 20.
+
 ## 2026-11-01: First world
 
 - Procedural planet: warped continents, inland mountain ranges, biome colours, translucent sea, atmosphere glow with a day/night tint, stars, and a slow spin.

@@ -2,6 +2,10 @@
 
 Tap **Sculpt** to open the edit panel. While it's open, the planet stops auto-spinning.
 
+## Picking
+
+The brush finds the ground with a raycast through a bounding-volume tree (three-mesh-bvh). The tree is refit every 4 frames during a stroke and again when it ends.
+
 ## Gestures
 
 - **Drag on the planet** to sculpt.
@@ -25,10 +29,11 @@ Heights are clamped to the range −0.16 to 0.3.
 
 ## Undo
 
-Each stroke saves a snapshot first. Undo (↶) steps back through the last 20 strokes.
+Each stroke saves a snapshot first. Undo (↶) steps back through the last 15 strokes.
 
 ## Saving
 
-- The app saves to `localStorage` under `tinyworld-save-v1`. The save holds the seed, the weather and, once you've sculpted, every vertex height as Int16 (about 110 KB).
+- The app saves to `localStorage` under `tinyworld-save-v1`. The save holds the seed, the weather and, once you've sculpted, every vertex height as Int16 (about 440 KB).
 - It saves 0.4 seconds after a stroke or a weather change, and whenever the app goes to the background.
+- A world sculpted on the previous half-resolution mesh (`DETAIL` 63) is carried over when it loads. Old vertices keep their heights, and each new in-between vertex takes the mean of its old neighbours.
 - **New world** rolls a new seed. If you've sculpted, it asks first.

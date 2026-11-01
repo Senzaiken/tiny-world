@@ -54,7 +54,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 </style>
 <script type="importmap">
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js",
-"three/addons/":"https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/"}}
+"three/addons/":"https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/",
+"three-mesh-bvh":"https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.17/build/index.module.js"}}
 </script>
 </head>
 <body>
@@ -97,8 +98,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { computeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 
-const BUILD='20261101142229';
+const BUILD='20261101143007';
 const SAVE_KEY='tinyworld-save-v1';
 const $=id=>document.getElementById(id);
 const clamp=(x,a,b)=>x<a?a:x>b?b:x;
@@ -165,15 +167,19 @@ const tilt=new THREE.Group(); tilt.rotation.z=0.38; scene.add(tilt);
 const spin=new THREE.Group(); tilt.add(spin);
 
 /* ---------- terrain mesh ---------- */
-const DETAIL=63;
-let geo=new THREE.IcosahedronGeometry(1,DETAIL);
-geo.deleteAttribute('normal'); geo.deleteAttribute('uv');
-geo=mergeVertices(geo);
+const DETAIL=127; // 163,842 vertices, 327,680 triangles
+function icosphere(detail){
+  let g=new THREE.IcosahedronGeometry(1,detail);
+  g.deleteAttribute('normal'); g.deleteAttribute('uv');
+  return mergeVertices(g);
+}
+const geo=icosphere(DETAIL);
+geo.computeBoundsTree=computeBoundsTree; geo.computeBoundsTree(); // BVH for fast sculpt raycasts (reorders triangles, so build it first)
 const N=geo.attributes.position.count;
 const posAttr=geo.attributes.position;
 const dirs=new Float32Array(N*3);
 for(let i=0;i<N;i++){const x=posAttr.getX(i),y=posAttr.getY(i),z=posAttr.getZ(i),l=Math.hypot(x,y,z);dirs[i*3]=x/l;dirs[i*3+1]=y/l;dirs[i*3+2]=z/l;}
-const heights=new Float32Array(N), vary=new Float32Array(N);
+const heights=new Float32Array(N), vary=new Float32Array(N), nrm=new Float32Array(N*3);
 const colAttr=new THREE.BufferAttribute(new Float32Array(N*3),3); geo.setAttribute('color',colAttr);
 geo.boundingSphere=new THREE.Sphere(new THREE.Vector3(),1.35);
 /* neighbour lists (CSR) for smoothing */
@@ -184,10 +190,29 @@ const nbrStart=new Uint32Array(N+1), nbr=(()=>{
   let k=0;for(let i=0;i<N;i++){nbrStart[i]=k;k+=lists[i].length;}nbrStart[N]=k;
   const out=new Uint32Array(k);for(let i=0;i<N;i++)out.set(lists[i],nbrStart[i]);return out;
 })();
+/* vertex -> triangle lists (CSR), so normals can be updated locally while sculpting */
+const IX=geo.index.array, vtStart=new Uint32Array(N+1), vtList=(()=>{
+  const cnt=new Uint32Array(N);for(let k=0;k<IX.length;k++)cnt[IX[k]]++;
+  let a=0;for(let i=0;i<N;i++){vtStart[i]=a;a+=cnt[i];}vtStart[N]=a;
+  const out=new Uint32Array(a),fill=vtStart.slice(0,N);
+  for(let k=0;k<IX.length;k++)out[fill[IX[k]]++]=(k/3)|0;return out;
+})();
+const P=geo.attributes.position.array;
+function vertexNormal(v){
+  let nx=0,ny=0,nz=0;
+  for(let k=vtStart[v];k<vtStart[v+1];k++){
+    const t=vtList[k]*3,a=IX[t]*3,b=IX[t+1]*3,c=IX[t+2]*3;
+    const ux=P[b]-P[a],uy=P[b+1]-P[a+1],uz=P[b+2]-P[a+2],wx=P[c]-P[a],wy=P[c+1]-P[a+1],wz=P[c+2]-P[a+2];
+    nx+=uy*wz-uz*wy;ny+=uz*wx-ux*wz;nz+=ux*wy-uy*wx;
+  }
+  const l=Math.hypot(nx,ny,nz)||1;nrm[v*3]=nx/l;nrm[v*3+1]=ny/l;nrm[v*3+2]=nz/l;
+}
+const mark=new Uint32Array(N); let stamp=0;
+const affected=new Uint32Array(N); let affectedN=0;
 const terrainMat=new THREE.MeshStandardMaterial({vertexColors:true,flatShading:true,roughness:.92,metalness:0});
-const terrain=new THREE.Mesh(geo,terrainMat); spin.add(terrain);
+const terrain=new THREE.Mesh(geo,terrainMat); terrain.raycast=acceleratedRaycast; spin.add(terrain);
 
-const water=new THREE.Mesh(new THREE.SphereGeometry(1,128,96),
+const water=new THREE.Mesh(new THREE.SphereGeometry(1,192,128),
   new THREE.MeshStandardMaterial({color:0x2b7fbf,roughness:.34,metalness:0,transparent:true,opacity:.8}));
 water.renderOrder=1; spin.add(water);
 
@@ -215,10 +240,23 @@ function generate(s){
     vary[i]=n4(x*6,y*6,z*6);
   }
 }
+// Writes positions from heights. With a list, only those vertices move and only the normals around them
+// are recomputed; the vertices whose shading may change are left in `affected` for recolouring.
 function applyPositions(list,count){
-  if(!list){for(let i=0;i<N;i++){const r=1+heights[i];posAttr.setXYZ(i,dirs[i*3]*r,dirs[i*3+1]*r,dirs[i*3+2]*r);}}
-  else for(let k=0;k<count;k++){const i=list[k],r=1+heights[i];posAttr.setXYZ(i,dirs[i*3]*r,dirs[i*3+1]*r,dirs[i*3+2]*r);}
-  posAttr.needsUpdate=true; geo.computeVertexNormals();
+  if(!list){
+    for(let i=0;i<N;i++){const r=1+heights[i];P[i*3]=dirs[i*3]*r;P[i*3+1]=dirs[i*3+1]*r;P[i*3+2]=dirs[i*3+2]*r;}
+    for(let i=0;i<N;i++)vertexNormal(i);
+    posAttr.clearUpdateRanges(); posAttr.needsUpdate=true; geo.boundsTree.refit(); return;
+  }
+  stamp++; affectedN=0; let lo=N,hi=0;
+  for(let k=0;k<count;k++){
+    const i=list[k],r=1+heights[i];P[i*3]=dirs[i*3]*r;P[i*3+1]=dirs[i*3+1]*r;P[i*3+2]=dirs[i*3+2]*r;
+    if(i<lo)lo=i;if(i>hi)hi=i;
+    if(mark[i]!==stamp){mark[i]=stamp;affected[affectedN++]=i;}
+    for(let j=nbrStart[i];j<nbrStart[i+1];j++){const n=nbr[j];if(mark[n]!==stamp){mark[n]=stamp;affected[affectedN++]=n;}}
+  }
+  for(let k=0;k<affectedN;k++)vertexNormal(affected[k]);
+  if(hi>=lo)posAttr.addUpdateRange(lo*3,(hi-lo+1)*3); posAttr.needsUpdate=true;
 }
 const PAL={deep:new THREE.Color(0x0f2c44),shallow:new THREE.Color(0x3fa7a2),sand:new THREE.Color(0xe4d199),
   grass:new THREE.Color(0x74b552),grass2:new THREE.Color(0x4f8f3c),forest:new THREE.Color(0x2c6633),
@@ -226,7 +264,7 @@ const PAL={deep:new THREE.Color(0x0f2c44),shallow:new THREE.Color(0x3fa7a2),sand
 const tmpC=new THREE.Color(), tmpC2=new THREE.Color();
 let snowAmt=0, wetAmt=0;
 function shade(i){
-  const h=heights[i],v=vary[i],nrm=geo.attributes.normal.array;
+  const h=heights[i],v=vary[i];
   const dx=dirs[i*3],dy=dirs[i*3+1],dz=dirs[i*3+2];
   const slope=1-(nrm[i*3]*dx+nrm[i*3+1]*dy+nrm[i*3+2]*dz);
   const c=tmpC;
@@ -246,8 +284,17 @@ function shade(i){
   colAttr.array[i*3]=c.r;colAttr.array[i*3+1]=c.g;colAttr.array[i*3+2]=c.b;
 }
 function recolor(list,count){
-  if(!list) for(let i=0;i<N;i++)shade(i); else for(let k=0;k<count;k++)shade(list[k]);
+  if(!list){ for(let i=0;i<N;i++)shade(i); colAttr.clearUpdateRanges(); }
+  else{let lo=N,hi=0;for(let k=0;k<count;k++){const i=list[k];shade(i);if(i<lo)lo=i;if(i>hi)hi=i;}if(hi>=lo)colAttr.addUpdateRange(lo*3,(hi-lo+1)*3);}
   colAttr.needsUpdate=true;
+}
+// Weather-driven recolouring is spread over several frames so snow and rain never cause a hitch.
+let recolorCursor=-1;
+function recolorStep(){
+  const end=Math.min(N,recolorCursor+28000);
+  for(let i=recolorCursor;i<end;i++)shade(i);
+  colAttr.addUpdateRange(recolorCursor*3,(end-recolorCursor)*3); colAttr.needsUpdate=true;
+  recolorCursor=end>=N?-1:end;
 }
 
 /* ---------- atmosphere (one front-side shell: limb haze + outer glow) ---------- */
@@ -413,7 +460,8 @@ function updateWeather(dt){
   snowAmt=clamp(snowAmt+(wxName==='snow'?dt*.06:-dt*.035),0,1);
   wetAmt=clamp(wetAmt+(W.rain>.4?dt*.25:-dt*.05),0,1);
   recolorTimer-=dt;
-  if(recolorTimer<=0&&(Math.abs(snowAmt-lastSnow)>.004||Math.abs(wetAmt-lastWet)>.01)){recolor();lastSnow=snowAmt;lastWet=wetAmt;recolorTimer=.15;}
+  if(recolorCursor>=0) recolorStep();
+  else if(recolorTimer<=0&&(Math.abs(snowAmt-lastSnow)>.004||Math.abs(wetAmt-lastWet)>.01)){recolorCursor=0;lastSnow=snowAmt;lastWet=wetAmt;recolorTimer=.15;}
   // fog layer
   const fm=fogShell.material; fm.opacity=W.fog*.6; fogShell.visible=fm.opacity>.01;
   // lighting and clouds, with lightning flashes
@@ -426,7 +474,7 @@ function updateWeather(dt){
 }
 
 /* ---------- camera & controls (sculpt listener registered first so it can claim the gesture) ---------- */
-const raycaster=new THREE.Raycaster(), ndc=new THREE.Vector2();
+const raycaster=new THREE.Raycaster(), ndc=new THREE.Vector2(); raycaster.firstHitOnly=true;
 let editing=false, sculpting=false, sculptId=null, pointers=0, haveHover=false;
 const hitDir=new THREE.Vector3(), hitLocal=new THREE.Vector3();
 function pick(e){
@@ -472,11 +520,12 @@ let tool='raise', brushR=.13, brushS=.55, flatH=0;
 const touched=new Uint32Array(N); let touchedN=0;
 const undoStack=[]; let sculpted=false;
 function beginStroke(){
-  undoStack.push(heights.slice()); if(undoStack.length>20)undoStack.shift(); $('undoBtn').disabled=false;
+  undoStack.push(heights.slice()); if(undoStack.length>15)undoStack.shift(); $('undoBtn').disabled=false;
   let best=-2,bi=0; for(let i=0;i<N;i++){const d=dirs[i*3]*hitDir.x+dirs[i*3+1]*hitDir.y+dirs[i*3+2]*hitDir.z;if(d>best){best=d;bi=i;}}
   flatH=Math.max(heights[bi],0.002);
 }
-function endStroke(){ sculpting=false; sculptId=null; controls.enabled=true; sculpted=true; queueSave(); }
+function endStroke(){ sculpting=false; sculptId=null; controls.enabled=true; sculpted=true; geo.boundsTree.refit(); queueSave(); }
+let strokeFrames=0;
 function sculptStep(dt){
   const cosR=Math.cos(brushR); touchedN=0;
   const hx=hitDir.x,hy=hitDir.y,hz=hitDir.z,rate=brushS*dt;
@@ -487,11 +536,14 @@ function sculptStep(dt){
     let h=heights[i];
     if(tool==='raise') h+=rate*w*.1;
     else if(tool==='lower') h-=rate*w*.1;
-    else if(tool==='smooth'){let s=0;const a=nbrStart[i],b=nbrStart[i+1];for(let k=a;k<b;k++)s+=heights[nbr[k]];h+=(s/(b-a)-h)*Math.min(1,w*rate*10);}
+    else if(tool==='smooth'){let s=0;const a=nbrStart[i],b=nbrStart[i+1];for(let k=a;k<b;k++)s+=heights[nbr[k]];h+=(s/(b-a)-h)*Math.min(1,w*rate*16);}
     else h+=(flatH-h)*Math.min(1,w*rate*6);
     heights[i]=clamp(h,-.16,.3); touched[touchedN++]=i;
   }
-  if(touchedN){applyPositions(touched,touchedN);recolor(touched,touchedN);}
+  if(touchedN){
+    applyPositions(touched,touchedN); recolor(affected,affectedN);
+    if(++strokeFrames%4===0) geo.boundsTree.refit(); // keep picking accurate as the ground moves
+  }
 }
 function placeRing(){
   let best=-2,bi=0; const hx=hitDir.x,hy=hitDir.y,hz=hitDir.z;
@@ -524,13 +576,32 @@ function load(){
   try{
     const d=JSON.parse(localStorage.getItem(SAVE_KEY)||'null'); if(!d)return false;
     generate(d.seed|0);
-    if(d.h&&d.detail===DETAIL){
+    if(d.h){
       const s=atob(d.h),b=new Uint8Array(s.length);for(let i=0;i<s.length;i++)b[i]=s.charCodeAt(i);
-      const q=new Int16Array(b.buffer);if(q.length===N){for(let i=0;i<N;i++)heights[i]=q[i]/100000;sculpted=true;}
+      const q=new Int16Array(b.buffer);
+      if(d.detail===DETAIL&&q.length===N){for(let i=0;i<N;i++)heights[i]=q[i]/100000;sculpted=true;}
+      else if(d.detail*2+1===DETAIL&&upsample(q,d.detail)){sculpted=true;save();}
     }
     if(PRESETS[d.wx]){setWeather(d.wx);Object.assign(W,PRESETS[d.wx]);atmoMat.uniforms.uColor.value.setHex(PRESETS[d.wx].atmo);if(d.wx==='snow')snowAmt=1;}
     return true;
   }catch(e){return false;}
+}
+// Carries a sculpted world over from the previous, half-resolution mesh. Every old vertex is also a vertex
+// of the new mesh; each new in-between vertex sits midway along an old edge and takes the mean of its old neighbours.
+function upsample(q,oldDetail){
+  const og=icosphere(oldDetail),op=og.attributes.position;
+  if(op.count!==q.length)return false;
+  const key=(x,y,z)=>Math.round(x*2e4)+','+Math.round(y*2e4)+','+Math.round(z*2e4);
+  const map=new Map();
+  for(let i=0;i<op.count;i++){const x=op.getX(i),y=op.getY(i),z=op.getZ(i),l=Math.hypot(x,y,z);map.set(key(x/l,y/l,z/l),q[i]/100000);}
+  const got=new Uint8Array(N);
+  for(let i=0;i<N;i++){const h=map.get(key(dirs[i*3],dirs[i*3+1],dirs[i*3+2]));if(h!==undefined){heights[i]=h;got[i]=1;}}
+  for(let i=0;i<N;i++){
+    if(got[i])continue;
+    let s=0,n=0;for(let j=nbrStart[i];j<nbrStart[i+1];j++)if(got[nbr[j]]){s+=heights[nbr[j]];n++;}
+    if(n)heights[i]=s/n;
+  }
+  og.dispose(); return true;
 }
 function newWorld(){
   if(sculpted&&!confirm('Replace this world? Your sculpting will be lost.'))return;

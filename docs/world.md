@@ -2,10 +2,12 @@
 
 ## Planet mesh
 
-- An icosphere (`DETAIL` 63) with merged vertices: 40,962 vertices and 81,920 triangles.
+- An icosphere (`DETAIL` 127) with merged vertices: 163,842 vertices and 327,680 triangles, about 1.4° between neighbouring vertices.
 - Each vertex stores a unit direction and a height. Its position is `direction × (1 + height)`.
 - Sea level is height 0. Water is a separate translucent sphere at radius 1.
 - Flat shading gives the low-poly look. Vertex colours carry the biomes.
+- Vertex normals are kept on the CPU only, for slope colouring. They're recomputed locally around each brush stroke.
+- Weather recolouring is spread over about 6 frames, so snow and rain never cause a hitch.
 
 ## Generation
 
